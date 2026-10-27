@@ -1,3 +1,11 @@
+## Unified 0.9.0 and Issue #5
+
+The product now has one release and two platform receipts. Existing DS/proxy installation identities remain internal ownership affinities; both legacy upgrade paths must preserve credentials, model choices/hiding, context/compaction reductions, service ownership and rollback. Their first compatibility packages share the unified core. New checks use `main/unified-update.json`; bridge equivalence requires exact runtime-file hashes and the same version. Test the next canonical upgrade and rollback, not only initial bridge download.
+
+External message IDs now carry a versioned origin. Same-provider requests recover the original identity; cross-provider full messages are replayed inline, preserving content and function `call_id` linkage. Old complete UUIDv4 adapter messages are handled even without reasoning items. A same-model reasoning restore is not evidence of a provider switch. Test JSON/SSE event ID consistency, HTTP/WS, no reasoning, mixed reasoning, native GPT ID preservation and real native same-thread return to GPT. Provider error reporting remains unchanged.
+
+The release requires the unified migration/source tests and `native_cross_provider_message_ids` on both OSes. Historical sections below describe earlier releases and their then-current four-variant matrix.
+
 ## Builtin installation validation regression (Issue #3)
 
 `validate_build()` must run directly for fresh builtin ownership (`provider=None`), legacy provider tables, and builtin migrations retaining a dormant table. Invalid/missing ownership, provider types, selected provider, endpoints, health identity, service command, staged hashes, app identity and failed probes remain rejected. First-install transaction fixtures must have a path that keeps the production validator enabled.

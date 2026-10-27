@@ -376,7 +376,7 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
     template=p.catalog_template(native)
     connection_settings = json.loads((directory/'connections.json').read_text(encoding='utf-8')) if (directory/'connections.json').exists() else {}
     manifest = copy.deepcopy(manifest)
-    if settings['edition'] == 'proxy':
+    if settings['edition'] in ('ds','proxy','unified'):
         if 'deepseek_enabled' in connection_settings:
             p.require(type(connection_settings['deepseek_enabled']) is bool,'Invalid DeepSeek preference')
             manifest['deepseek_enabled'] = connection_settings['deepseek_enabled']
@@ -389,10 +389,10 @@ def synchronize(settings, directory, baseline, *, fetch_native=native_catalog, f
     providers=[('deepseek-desktop',[p.MODEL],{'deepseek-flash'})] if deepseek else []
     locals=manifest.get('locals',[])
     connections=directory/'connections.json'
-    if settings['edition']=='proxy' and connections.exists():
+    if settings['edition'] in ('ds','proxy','unified') and connections.exists():
         import local_support
         locals=local_support.load(connections)
-    if settings['edition']=='proxy' and manifest.get('proxy'):
+    if settings['edition'] in ('ds','proxy','unified') and manifest.get('proxy'):
         providers.append(('easycli-desktop',manifest['proxy']['models'],{'grok','gemini-flash','opus'} if connection_settings.get('proxy_auto_add',True) else set()))
     resolved={};direct_specs={}
     for provider, initial, allowed in providers:

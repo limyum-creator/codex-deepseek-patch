@@ -72,7 +72,7 @@ def _endpoint(base, suffix='responses', *, allow_remote_http=False):
 
 
 def validate_profile(profile):
-    if (profile.get('format') != 1 or profile.get('edition') not in ('ds', 'proxy')
+    if (profile.get('format') != 1 or profile.get('edition') not in ('ds', 'proxy', 'unified')
             or not isinstance(profile.get('identity'), str) or not profile['identity']
             or not isinstance(profile.get('token'), str) or len(profile['token']) < 32
             or not all(c.isascii() and (c.isalnum() or c in '-_') for c in profile['token'])
@@ -475,7 +475,8 @@ def _resolve_origin(server, body):
     try:
         body, expanded = expand_handoffs(body)
         origins = server.legacy_origin_index.get() if server.legacy_origin_index else {}
-        result, protected, changed = resolve_request(body, body['model'], legacy_origins=origins)
+        result, protected, changed = resolve_request(body, body['model'], legacy_origins=origins,
+            official=body['model'] not in getattr(server, 'profile', {}).get('routes', {}))
         return result, protected, changed or expanded
     except LegacyHistoryError as exc:
         raise RelayError(exc.status, exc.code, exc.message) from None

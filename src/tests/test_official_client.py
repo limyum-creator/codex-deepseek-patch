@@ -12,6 +12,17 @@ import update_worker
 
 
 class NativeStagingTests(unittest.TestCase):
+    def test_manual_unified_upgrade_keeps_baseline_service_affinity(self):
+        for affinity in ('ds','proxy'):
+            with self.subTest(affinity=affinity),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary);baseline=root/'old';baseline.mkdir()
+                (baseline/'manifest.json').write_text(json.dumps({'edition':affinity}))
+                args=argparse.Namespace(app=root/'app',baseline=baseline,codex_home=root/'home',output=root/'new')
+                with patch.object(p,'EDITION','unified'),patch.object(native,'stage',return_value='prepared') as stage,patch('builtins.print'):
+                    self.assertEqual(native.build(args),'prepared')
+                self.assertEqual(stage.call_args.kwargs['edition'],affinity)
+                self.assertEqual(stage.call_args.kwargs['baseline'],baseline)
+
     def test_fresh_generic_service_stages_without_app_or_configuration_writes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);app=root/'official';home=root/'home';output=root/'prepared'

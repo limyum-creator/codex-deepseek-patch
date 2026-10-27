@@ -146,7 +146,7 @@ class Progress:
 
     @optional_view
     def begin(self, edition, version, key, restart=False, initial='available'):
-        if edition not in ('ds', 'proxy') or not re.fullmatch(r'[\w.+-]{1,79}', version):
+        if edition not in ('ds', 'proxy', 'unified') or not re.fullmatch(r'[\w.+-]{1,79}', version):
             raise ValueError('Invalid update identity')
         with control_lock(self.directory):
             meta = load_json(self.directory / 'progress.context.json', {})
@@ -325,7 +325,7 @@ def _alive(pid):
 @optional_view
 def for_settings(settings, root=None, version=None, force=False, *, runtime=None, app_hash=None):
     directory = settings.get('state_dir')
-    if not directory or settings.get('edition') not in ('ds', 'proxy'):
+    if not directory or settings.get('edition') not in ('ds', 'proxy', 'unified'):
         return None
     import patch as p
     import updater

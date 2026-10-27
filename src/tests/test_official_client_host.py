@@ -309,7 +309,7 @@ class NativeComposerQuotaTests(unittest.TestCase):
         root=Path(os.environ['CODEX_COMPOSER_FIXTURE']).resolve()
         edition=os.environ.get('CODEX_COMPOSER_EDITION','ds')
         root.mkdir(parents=True,exist_ok=True)
-        models=['deepseek-flash'] + (['grok-4.7','gemini-3.8-flash','arbitrary-local'] if edition=='proxy' else [])
+        models=['deepseek-flash'] + (['grok-4.7','gemini-3.8-flash','arbitrary-local'] if edition!='ds' else [])
         plan=host.prepare(app,models)
         replacements=host.assets(app,plan)
         archive=p.app_layout(app)['asar'];header,base,_=p.archive_header(archive)

@@ -22,6 +22,34 @@ RESULT = {'type': 'function_call_output', 'call_id': 'same_call', 'output': 'VIS
 
 
 class OriginTests(unittest.TestCase):
+    def test_message_origins_restore_same_service_and_inline_cross_service_without_reasoning(self):
+        from chat_completions_compat import _Completion
+        from reasoning_origin import MESSAGE_PREFIX
+        completion=_Completion('glm-fixture');list(completion.add_text('4','text'))
+        original=completion.response('completed')['output'][0]
+        stamped=stamp_item(original,'glm-fixture')
+        self.assertTrue(stamped['id'].startswith(MESSAGE_PREFIX))
+        event=stamp_event({'type':'response.output_text.delta','item_id':original['id'],'delta':'4'},'glm-fixture')
+        self.assertEqual(event['item_id'],stamped['id'])
+        same,_,changed=resolve_request({'input':[stamped,CALL,RESULT]},'glm-fixture')
+        self.assertTrue(changed);self.assertEqual(same['input'],[original,CALL,RESULT])
+        crossed,_,changed=resolve_request({'input':[stamped,CALL,RESULT]},'gpt-fixture',official=True)
+        self.assertTrue(changed);self.assertNotIn('id',crossed['input'][0])
+        self.assertEqual(crossed['input'][0]['content'],original['content'])
+        self.assertEqual(crossed['input'][1:],[CALL,RESULT])
+        legacy,_,changed=resolve_request({'input':[original]},'gpt-fixture',official=True)
+        self.assertTrue(changed);self.assertNotIn('id',legacy['input'][0])
+        native={**original,'id':'msg_official_persisted'}
+        untouched,_,changed=resolve_request({'input':[native]},'gpt-fixture',official=True)
+        self.assertFalse(changed);self.assertEqual(untouched['input'],[native])
+        reference={'type':'item_reference','id':original['id']}
+        self.assertEqual(resolve_request({'input':[reference]},'gpt-fixture',official=True)[0]['input'],[reference])
+
+    def test_same_model_reasoning_restore_does_not_signal_foreign_message_ids(self):
+        native={'type':'message','role':'assistant','id':'msg_native','content':[{'type':'output_text','text':'keep'}]}
+        result,_,changed=resolve_request({'input':[stamp_item(REASONING,'gpt-fixture'),native]},'gpt-fixture',official=True)
+        self.assertTrue(changed);self.assertEqual(result['input'][-1],native)
+
     def test_same_model_restores_exact_signature_and_legacy_does_not_remove_it(self):
         stamped = stamp_item(REASONING, 'gemini-fixture')
         self.assertTrue(stamped['encrypted_content'].startswith(PREFIX))
@@ -212,6 +240,25 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(self.upstream.gpt_clean)
         self.assertEqual(self.upstream.records[-1][0]['input'], [CALL, RESULT])
         ws.close()
+
+    def test_cross_provider_message_ids_are_removed_on_http_and_websocket(self):
+        from chat_completions_compat import _Completion
+        completion=_Completion('glm-fixture');list(completion.add_text('4','text'))
+        old=completion.response('completed')['output'][0]
+        for message in (old,stamp_item(old,'glm-fixture')):
+            for reasoning in ([],[stamp_item(REASONING,'glm-fixture')]):
+                body={'model':'gpt-fixture','input':reasoning+[message,CALL,RESULT]}
+                self.http(body)
+                sent=self.upstream.records[-1][0]['input']
+                self.assertNotIn('id',next(i for i in sent if i.get('type')=='message'))
+                self.assertEqual(sent[-2:],[CALL,RESULT])
+                ws,_=connect_websocket(f'ws://127.0.0.1:{self.adapter.server_port}'+self.path,timeout=3)
+                try:
+                    ws.send(json.dumps({'type':'response.create',**body}));self.terminal(ws)
+                    sent=self.upstream.records[-1][0]['input']
+                    self.assertNotIn('id',next(i for i in sent if i.get('type')=='message'))
+                    self.assertEqual(sent[-2:],[CALL,RESULT])
+                finally:ws.close()
 
     def test_unmarked_original_gpt_http_bytes_are_unchanged(self):
         raw = b'{ "model":"gpt-fixture", "input":[{"type":"reasoning","encrypted_content":"official-original-cipher"}] }'
