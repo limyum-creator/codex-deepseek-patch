@@ -476,6 +476,29 @@ def _resolve_origin(server, body):
         body, expanded = expand_handoffs(body)
         origins = server.legacy_origin_index.get() if server.legacy_origin_index else {}
         result, protected, changed = resolve_request(body, body['model'], legacy_origins=origins)
+        # Cross-model handoffs carry item IDs minted by the previous model's
+        # adapter (msg_* / rs_* / fc_*); OpenAI rejects unknown IDs with
+        # "persisted-item lookup not supported". resolve_request converts
+        # cross-model reasoning to plain messages (no 'type' key), which is
+        # the signal that a provider change happened. Same-model continuations
+        # keep reasoning items intact and their native IDs.
+        cross_model = changed and not any(
+            isinstance(item, dict) and item.get('type') == 'reasoning'
+            for item in result.get('input', [])
+        )
+        # Low-effort sessions may emit no reasoning at all. Adapter-minted
+        # UUID-dash msg_ IDs and 32-hex rs_ IDs are foreign to official
+        # models. Official rs_ IDs use 56 hex chars; fixture msg_N/message_N
+        # and resp_N formats are preserved.
+        if not changed and _is_official_model(server.profile, result.get('model', '')):
+            cross_model = True
+        if cross_model:
+            import re
+            foreign_id = re.compile(r'^(?:msg|rs|fc|fco)_[0-9a-f]{32}(?:-[0-9a-f]{4})*$')
+            for item in result.get('input', []):
+                if isinstance(item, dict) and isinstance(item.get('id'), str):
+                    if foreign_id.match(item['id']):
+                        item.pop('id', None)
         return result, protected, changed or expanded
     except LegacyHistoryError as exc:
         raise RelayError(exc.status, exc.code, exc.message) from None
@@ -895,12 +918,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 url = _route_url(route)
                 headers = _route_headers(self.server, route, stream=bool(body.get('stream')))
             else:
-                body, _, changed = _resolve_origin(self.server, body)
-                if changed:
+                before_ids = [item.get('id') if isinstance(item, dict) else None for item in (body.get('input') or [])]
+                body, _, _ = _resolve_origin(self.server, body)
+                after_ids = [item.get('id') if isinstance(item, dict) else None for item in (body.get('input') or [])]
+                if before_ids != after_ids:
                     raw = _json(body)
-                    if encoding == 'zstd':
-                        raw = zstd_body(raw, decompress=False, node=self.server.profile.get('compression_node'),
-                                        cancelled=operation.cancelled)
+                if encoding == 'zstd':
+                    raw = zstd_body(raw, decompress=False, node=self.server.profile.get('compression_node'),
+                                    cancelled=operation.cancelled)
                 url = self.gpt_url('responses/compact' if standalone_compaction else 'responses')
                 headers = sanitize_headers(self.headers)
             forwarded = True
@@ -1279,8 +1304,7 @@ class WebSocketSession:
                 threading.Thread(target=self.route_worker, args=(self.request_id, body, route, self.operation, self.trace_id), daemon=True).start()
             else:
                 body, _, changed = _resolve_origin(self.handler.server, body)
-                if changed:
-                    payload = _json(body)
+                payload = _json(body)
                 self.mode, self.active = 'gpt', True
                 self.history = None
                 threading.Thread(target=self.gpt_send, args=(payload,), daemon=True).start()
