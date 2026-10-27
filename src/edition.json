@@ -1,6 +1,6 @@
 {
-  "edition": "proxy",
-  "branch": "codex/existing-proxy-models",
-  "version": "0.7.0-proxy.1",
+  "edition": "unified",
+  "branch": "main",
+  "version": "0.9.0",
   "architecture": "official-client-v1"
 }

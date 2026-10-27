@@ -56,14 +56,57 @@ def setup_command(arguments, cancelled=None):
                         child.wait(timeout=5)
 
 
+def brand_assets(directory, source):
+    """Rasterize our small vector mark once, using only the standard library."""
+    import struct,zlib,math,xml.etree.ElementTree as ET
+    import monitor
+    from management import vector_contours, private_write
+    raw=Path(source).read_bytes();digest=p.sha(raw)
+    directory=Path(directory);stamp=directory/'brand.json'
+    paths={name:directory/('brand.'+name) for name in ('png','ico','icns')}
+    if monitor.load_json(stamp,{}).get('source')==digest and all(path.is_file() for path in paths.values()):
+        return digest,paths
+    size=512;pixels=bytearray(size*size*4)
+    for shape in ET.fromstring(raw):
+        kind=shape.tag.rsplit('}',1)[-1]
+        if kind not in ('polygon','path'):continue
+        color=bytes.fromhex(shape.attrib['fill'].lstrip('#'))+b'\xff'
+        contours=vector_contours(shape.attrib['d']) if kind=='path' else [
+            [tuple(map(float,value.split(','))) for value in shape.attrib['points'].split()]]
+        points=[v for contour in contours for v in contour]
+        for y in range(max(0,math.floor(min(v[1] for v in points))),min(size,math.ceil(max(v[1] for v in points)))):
+            scan=y+.5;crossings=[]
+            for contour in contours:
+                for (x1,y1),(x2,y2) in zip(contour,contour[1:]+contour[:1]):
+                    if (y1<=scan<y2) or (y2<=scan<y1):crossings.append(x1+(scan-y1)*(x2-x1)/(y2-y1))
+            crossings.sort()
+            for left,right in zip(crossings[::2],crossings[1::2]):
+                first=max(0,math.ceil(left-.5));last=min(size,math.ceil(right-.5))
+                if last>first:pixels[(y*size+first)*4:(y*size+last)*4]=color*(last-first)
+    smaller=bytearray()
+    for y in range(256):
+        smaller.append(0)  # PNG filter byte.
+        for x in range(256):
+            samples=[pixels[((y*2+dy)*size+x*2+dx)*4:((y*2+dy)*size+x*2+dx)*4+4] for dy in (0,1) for dx in (0,1)]
+            opaque=[v for v in samples if v[3]]
+            smaller.extend(bytes([sum(v[k] for v in opaque)//len(opaque) for k in range(3)]+[len(opaque)*255//4]) if opaque else b'\0\0\0\0')
+    def chunk(name,data):return struct.pack('>I',len(data))+name+data+struct.pack('>I',zlib.crc32(name+data))
+    png=b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',256,256,8,6,0,0,0))+chunk(b'IDAT',zlib.compress(smaller,9))+chunk(b'IEND',b'')
+    outputs={'png':png,'ico':struct.pack('<HHHBBBBHHII',0,1,1,0,0,0,0,1,32,len(png),22)+png,
+             'icns':b'icns'+struct.pack('>I',len(png)+16)+b'ic08'+struct.pack('>I',len(png)+8)+png}
+    for kind,data in outputs.items():private_write(paths[kind],data)
+    monitor.atomic_json(stamp,{'source':digest})
+    return digest,paths
+
+
 def first_setup_view(directory, notice=''):
     import os
     from management import (setup_read, setup_app, hub_field, hub_button,
-                            hub_options, setup_revision, footer_layout)
+                            hub_options, setup_revision, footer_layout, setup_deepseek)
     draft=setup_read(directory);phase=draft.get('phase','draft')
     rows=[hub_field('app','Codex 应用位置',draft.get('app') or setup_app()),
           hub_field('home','Codex 配置目录',draft.get('home') or str(Path(os.environ.get('CODEX_HOME',Path.home()/'.codex'))))]
-    if p.EDITION=='ds':
+    if setup_deepseek(draft):
         rows += [hub_field('key','DeepSeek API Key','','secret',hint='只保存于本机；无需重新登录 GPT。')]
     else:
         connection=draft.get('connection',{})
@@ -76,11 +119,13 @@ def first_setup_view(directory, notice=''):
                  hub_field('maximum','最大上下文',draft.get('maximum'),kind='number',hint='仅在服务未提供规格时填写实际最大值。'),
                  hub_field('output','最大输出',draft.get('output'),kind='number',hint='Anthropic 缺少规格时填写'),
                  hub_field('respect','保留本地服务加载窗口',connection.get('respect_server_context',True),'toggle')]
-    if p.EDITION=='proxy' and draft.get('available'):
+    if not setup_deepseek(draft) and draft.get('available'):
         rows.append({'type':'note','text':'勾选接入型号，再保存选择。'})
         rows += [hub_field('model_'+str(i),model,model in draft.get('connection',{}).get('models',[]),'toggle') for i,model in enumerate(draft['available'])]
     rows += [hub_field('maintenance','安装后自动检查补丁和模型更新',draft.get('maintenance',True),'toggle')]
     buttons=[hub_button('保存并检测','setup_save')]
+    if phase=='draft':buttons.append(hub_button('切换到兼容接口 / 本地模型' if setup_deepseek(draft) else '切换到 DeepSeek 快速接入',
+        'setup_compatible' if setup_deepseek(draft) else 'setup_deepseek'))
     if phase=='draft' and draft:buttons.append(hub_button('准备并验证','setup_prepare',style='primary'))
     if phase=='prepared':
         rows.append({'type':'note','text':'准备和隔离验证通过。请先正常退出 Codex，再点击安装。'})
@@ -88,7 +133,7 @@ def first_setup_view(directory, notice=''):
     if phase=='installed':
         rows.append({'type':'note','text':'适配层已安装，继续完成设置入口与自动维护。'})
         buttons=[hub_button('完成设置','setup_install',style='primary')]
-    return {'route':'setup','title':'首次设置 · '+('DS 版' if p.EDITION=='ds' else '扩展版'),
+    return {'route':'setup','title':'首次设置 · '+('DeepSeek 快速接入' if setup_deepseek(draft) else '兼容接口 / 本地模型'),
             'subtitle':'发现应用 → 检测模型 → 验证 → 安装','rows':rows,'buttons':buttons,
             'revision':setup_revision(directory),'edition':p.EDITION,'notice':notice,
             'options':hub_options(directory),'footer':footer_layout(buttons),'back':None}

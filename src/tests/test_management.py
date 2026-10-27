@@ -155,8 +155,8 @@ class SettingsTests(unittest.TestCase):
         self.save(self.build/'manifest.json',{**self.manifest,'edition':'ds'})
         with patch.object(ui.p,'EDITION','ds'):
             page=ui.hub_view(self.root,'connections')
-            self.assertEqual([r['title'] for r in page['rows']],['DeepSeek'])
-            with self.assertRaises(ui.SettingsError):ui.hub_view(self.root,'connections/edit')
+            self.assertEqual([r['title'] for r in page['rows']],['DeepSeek','现成代理','Work PC'])
+            self.assertEqual(ui.hub_view(self.root,'connections/edit')['route'],'connections/edit')
 
     def test_update_page_embeds_progress_and_actions_keep_current_update_identity(self):
         import update_progress
@@ -351,6 +351,42 @@ class SettingsTests(unittest.TestCase):
         self.assertLessEqual(listing['initial_rows'],8)
         for behavior in ('tail_visible','searchable','restored'):
             self.assertTrue(listing[behavior],behavior)
+
+    def test_unified_old_ds_can_disable_deepseek_without_losing_other_preferences(self):
+        self.save(self.root/'settings.json',{**self.settings,'edition':'ds'})
+        self.save(self.build/'manifest.json',{**self.manifest,'edition':'ds','deepseek_enabled':True})
+        choices={'hidden':['gpt-test'],'context_windows':{'local-test':8192},'compact_limits':{'local-test':7000}}
+        self.save(self.root/'model-preferences.json',choices)
+        with patch.object(ui.p,'EDITION','unified'):
+            self.perform('save_deepseek',{'enabled':False,'key':''})
+            value=ui.snapshot(self.root)
+            self.assertFalse(value['deepseek_enabled'])
+            self.assertEqual(len(value['connections']),1)
+        self.assertEqual(ui.monitor.load_json(self.root/'model-preferences.json'),choices)
+
+    def test_unified_settings_reopens_active_legacy_directory(self):
+        default=self.root/'monitor';other=self.root/'monitor-proxy';default.mkdir();other.mkdir()
+        self.save(default/'settings.json',{**self.settings,'edition':'ds','baseline':str(self.root/'inactive')})
+        self.save(other/'settings.json',self.settings)
+        (self.home/'config.toml').write_text('model_catalog_json='+json.dumps(str(self.build/'desktop-models.json')))
+        with patch.object(ui.monitor,'default_directory',return_value=default),patch.object(ui.p,'EDITION','unified'):
+            self.assertEqual(ui.find_directory(),other)
+            (self.home/'config.toml').write_text('model="gpt-fixture"')
+            with self.assertRaisesRegex(ui.SettingsError,'多个旧安装'):ui.find_directory()
+
+    @unittest.skipUnless(sys.platform in ('darwin','win32'),'Per-user native entry')
+    def test_unified_launcher_renames_only_verified_legacy_entry(self):
+        runtime=self.root/'runtime';runtime.mkdir();(runtime/'management.py').write_text('#fixture')
+        self.save(self.root/'settings.json',{**self.settings,'python_path':sys.executable})
+        with patch.object(Path,'home',return_value=self.root/'user'),patch.dict(os.environ,{'APPDATA':str(self.root/'appdata')}):
+            destination=Path(ui.ensure_launcher(self.root));old=destination.with_name('Codex 模型设置（扩展版）'+destination.suffix)
+            destination.rename(old)
+            info=ui.monitor.load_json(self.root/'settings-ui/launcher.json');info['path']=str(old)
+            self.save(self.root/'settings-ui/launcher.json',info)
+            with patch.object(ui.p,'EDITION','unified'):
+                self.assertEqual(ui.ensure_launcher(self.root),str(destination))
+            self.assertFalse(old.exists());self.assertTrue(destination.exists())
+            self.assertEqual(ui.monitor.load_json(self.root/'settings-ui/launcher.json')['path'],str(destination))
 
     @unittest.skipUnless(sys.platform in ('darwin','win32'),'Per-user native entry')
     def test_uninstall_removes_only_unchanged_owned_launcher(self):

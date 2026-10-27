@@ -8,6 +8,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import tempfile
@@ -15,6 +16,8 @@ import threading
 
 PREFIX = 'codex-model-adapter-origin:v1:'
 FAMILY = 'codex-model-adapter-origin:'
+MESSAGE_PREFIX = 'msg_cma1_'
+LEGACY_MESSAGE_ID = re.compile(r'msg_[0-9a-f]{12}4[0-9a-f]{3}[89ab][0-9a-f]{15}\Z')
 MAX_INDEX_BYTES = 32 * 1024 * 1024
 MAX_ROLLOUT_LINE = 64 * 1024 * 1024
 
@@ -72,8 +75,31 @@ def reasoning_key(item):
     return hashlib.sha256(json.dumps(item, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
 
 
+def message_origin(identity):
+    if not isinstance(identity, str) or not identity.startswith(MESSAGE_PREFIX):
+        return None
+    try:
+        value = json.loads(base64.b64decode(identity[len(MESSAGE_PREFIX):] + '=' * (-len(identity[len(MESSAGE_PREFIX):]) % 4), altchars=b'-_', validate=True))
+        if (not isinstance(value, list) or len(value) != 2 or
+                not all(isinstance(v, str) and 0 < len(v) <= 4096 for v in value)):
+            raise ValueError()
+        return value
+    except (ValueError, TypeError):
+        raise ReasoningOriginError('Invalid external message identity') from None
+
+
+def stamp_message_id(identity, model):
+    if not isinstance(identity, str) or not identity or message_origin(identity):
+        return identity
+    raw = json.dumps([model, identity], ensure_ascii=True, separators=(',', ':')).encode()
+    return MESSAGE_PREFIX + base64.urlsafe_b64encode(raw).decode().rstrip('=')
+
+
 def stamp_item(item, model):
     item = copy.deepcopy(item)
+    if isinstance(item, dict) and item.get('type') == 'message' and item.get('id'):
+        item['id'] = stamp_message_id(item['id'], model)
+        return item
     if not isinstance(item, dict) or item.get('type') != 'reasoning':
         return item
     cipher = item.get('encrypted_content')
@@ -97,6 +123,8 @@ def stamp_response(response, model):
 
 def stamp_event(event, model):
     event = copy.deepcopy(event)
+    if event.get('type', '').startswith(('response.output_text.', 'response.content_part.', 'response.refusal.')) and 'item_id' in event:
+        event['item_id'] = stamp_message_id(event['item_id'], model)
     if isinstance(event.get('item'), dict):
         event['item'] = stamp_item(event['item'], model)
     if isinstance(event.get('response'), dict):
@@ -104,7 +132,7 @@ def stamp_event(event, model):
     return event
 
 
-def resolve_request(body, target, *, legacy_origins=None):
+def resolve_request(body, target, *, legacy_origins=None, official=False):
     """Return (body, fingerprints of exact restored same-model items, changed).
 
     Unmarked official state and compaction items are untouched. Empty private
@@ -114,7 +142,21 @@ def resolve_request(body, target, *, legacy_origins=None):
     if not isinstance(result.get('input'), list):
         return result, protected, changed
     items = []
+    foreign_reasoning = False
     for item in result['input']:
+        if isinstance(item, dict) and item.get('type') == 'message':
+            origin = message_origin(item.get('id'))
+            if origin:
+                changed = True
+                if origin[0] == target:
+                    item['id'] = origin[1]
+                else:
+                    item.pop('id')
+            elif (official and item.get('role') == 'assistant' and item.get('content')
+                  and isinstance(item.get('id'), str) and LEGACY_MESSAGE_ID.fullmatch(item['id'])):
+                # Old Chat/Anthropic adapters minted UUIDv4 IDs with no origin.
+                # Replay the full message inline; never strip a bare reference.
+                item.pop('id'); changed = True
         if isinstance(item, dict) and item.get('type') == 'reasoning' and isinstance(item.get('encrypted_content'), str):
             origin = _decode(item['encrypted_content'])
             if origin is None and legacy_origins:
@@ -130,10 +172,17 @@ def resolve_request(body, target, *, legacy_origins=None):
                         item.pop('encrypted_content')
                     protected.add(reasoning_key(item))
                 else:
+                    foreign_reasoning = True
                     item = public_reasoning_message(item)
                     if item is None:
                         continue
         items.append(item)
+    if official and foreign_reasoning:
+        # Mixed old histories may contain unmarked provider Responses IDs.
+        # Full messages are replayed inline; tool call_id links stay intact.
+        for item in items:
+            if isinstance(item, dict) and item.get('type') == 'message' and item.get('content') and 'id' in item:
+                item.pop('id'); changed = True
     result['input'] = items
     return result, protected, changed
 

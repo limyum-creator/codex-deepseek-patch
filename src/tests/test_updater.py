@@ -13,6 +13,40 @@ import updater as u
 
 
 class UpdateTests(unittest.TestCase):
+    def test_unified_runtime_preserves_legacy_affinity_and_reuses_exact_bridge_core(self):
+        for affinity in ('ds','proxy'):
+            with self.subTest(affinity=affinity),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp);runtime=root/'runtime';runtime.mkdir();package=root/'package';package.mkdir()
+                for path,edition in ((runtime,affinity),(package,'unified')):
+                    (path/'edition.json').write_text(json.dumps({'edition':edition,'branch':u.CHANNELS[edition],'version':'0.9.0'}))
+                    (path/'code.py').write_text('same core')
+                preserved={
+                    'settings.json':{'edition':affinity,'baseline':'existing','python_path':'existing-runtime','interval':1200,'auto_update':False},
+                    'model-preferences.json':{'hidden':['model-hidden'],'context_windows':{'local':32768},'compact_limits':{'local':28000}},
+                    'connections.json':{'locals':[{'key_file':'existing-private-file','models':['local']}],'deepseek_enabled':affinity=='ds'},
+                    'credential.key':{'fixture':'do-not-change'}}
+                for name,value in preserved.items():(root/name).write_text(json.dumps(value))
+                before={name:(root/name).read_bytes() for name in preserved}
+                files=['edition.json','code.py']
+                release={'edition':'unified','version':'0.9.0','commit':'canonical','files':{name:p.file_sha(package/name) for name in files}}
+                obj=object.__new__(u.UpdateBackend);obj.edition=affinity;obj.directory=root;obj.installed_metadata=lambda:{}
+                def identity(path,*_):return {'edition':json.loads((Path(path)/'edition.json').read_text())['edition'],'files':files,'runtime_digest':u.runtime_digest(path,files)}
+                with mock.object(p,'ROOT',runtime),mock.object(p,'SERVICE_RUNTIME_FILES',tuple(files)),mock.object(u,'source_package') as fetch:
+                    self.assertEqual(obj.source_for_release(release),runtime);fetch.assert_not_called()
+                    (runtime/'code.py').write_text('independent edit')
+                    obj.source_for_release(release);fetch.assert_called_once()
+                (runtime/'code.py').write_text('same core')
+                records=[]
+                with mock.object(u,'worker',side_effect=identity),mock.object(p,'SERVICE_RUNTIME_FILES',tuple(files)):
+                    u.activate_runtime(package,root,affinity,checkpoint=records.append)
+                self.assertEqual(json.loads((runtime/'edition.json').read_text())['edition'],'unified')
+                self.assertEqual({name:(root/name).read_bytes() for name in preserved},before)
+                u.rollback_runtime(records[0])
+                self.assertEqual(json.loads((runtime/'edition.json').read_text())['edition'],affinity)
+                self.assertEqual({name:(root/name).read_bytes() for name in preserved},before)
+        self.assertFalse(p.runtime_accepts('ds','proxy'))
+        self.assertFalse(p.runtime_accepts('proxy','unified'))
+
     def test_unchanged_runtime_clears_stale_notice_without_restarting_update(self):
         from update_progress import Progress
         for edition in ('ds','proxy'):
@@ -199,10 +233,10 @@ class UpdateTests(unittest.TestCase):
 
     def test_channel_change_cannot_overwrite_existing_monitor(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);current=u.edition()['edition'];other='ds' if current=='proxy' else 'proxy'
+            root=Path(tmp);current='ds';other='proxy'
             monitor.atomic_json(root/'settings.json',{'edition':other,'app':'untouched'})
             args=Mock(state_dir=root,interval=300,baseline=None)
-            with self.assertRaisesRegex(ValueError,'pinned to another edition'), mock.object(monitor.sys,'platform','darwin'):
+            with self.assertRaisesRegex(ValueError,'pinned to another installation'), mock.object(monitor.sys,'platform','darwin'), mock.object(u,'edition',return_value={'edition':current}):
                 monitor.enable(args)
             self.assertEqual(monitor.load_json(root/'settings.json')['app'],'untouched')
             self.assertFalse((root/'runtime').exists())
@@ -388,6 +422,43 @@ class ArchiveAndReleaseTests(unittest.TestCase):
 
 
 class PairedCandidateTests(unittest.TestCase):
+    def test_unified_feed_and_legacy_bridges_are_bound_to_one_core(self):
+        import subprocess
+        from scripts import release_manifest as release
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)/'repo';root.mkdir()
+            def git(*args):return subprocess.check_output(['git',*args],cwd=root,text=True,**u.background_options()).strip()
+            git('init','-q');git('config','user.name','Release Test');git('config','user.email','test@example.invalid')
+            (root/'src/tests').mkdir(parents=True)
+            for name in ('patch.py','monitor.py','updater.py','update_worker.py','model_sync.py','common.py','tests/test_stub.py'):
+                (root/'src'/name).write_text('# shared source\n')
+            for name in ('patch.py','monitor.py','README.md','README.en.md'):(root/name).write_text('Unified version 0.9.0\n')
+            for channel in ('ds','proxy'):
+                meta={'edition':channel,'branch':u.CHANNELS[channel],'version':'0.8.0','architecture':'official-client-v1'}
+                (root/'src/edition.json').write_text(json.dumps(meta))
+                (root/'update.json').write_text(json.dumps({**meta,'sequence':7 if channel=='ds' else 10}))
+                git('add','.');git('commit','-qm',channel)
+                git('update-ref','refs/remotes/origin/'+u.CHANNELS[channel],git('rev-parse','HEAD'))
+            head=git('rev-parse','HEAD')
+            with mock.object(release,'ROOT',root):
+                candidate=release.prepare_unified(head,Path(temp)/'candidate','0.9.0')
+                canonical=candidate['editions']['unified']['release']
+                self.assertEqual(canonical['sequence'],12)
+                self.assertEqual(canonical['edition'],'unified')
+                for channel,item in candidate['bridges']['editions'].items():
+                    self.assertEqual(item['release']['edition'],channel)
+                    self.assertEqual(item['release']['version'],'0.9.0')
+                    self.assertEqual(item['release']['core_sha256'],canonical['core_sha256'])
+                feed=candidate['editions']['unified']['feed_commit']
+                self.assertEqual(json.loads(git('show',feed+':update.json'))['edition'],'ds')
+                self.assertEqual(json.loads(git('show',feed+':unified-update.json'))['edition'],'unified')
+                self.assertNotIn('unified-update.json',canonical['files'])
+                git('update-ref','refs/remotes/origin/main',feed)
+                follow=release.prepare_unified(head,Path(temp)/'next','0.9.1')
+                self.assertIsNone(follow['bridges']);self.assertEqual(follow['editions']['unified']['release']['sequence'],13)
+                self.assertEqual(git('show',follow['editions']['unified']['feed_commit']+':update.json'),git('show',feed+':update.json'))
+            self.assertEqual(git('rev-parse','HEAD'),head)
+
     def test_windows_package_unit_driver_captures_results_and_scopes_environment(self):
         import subprocess
         import sys
@@ -421,7 +492,7 @@ class PairedCandidateTests(unittest.TestCase):
         from scripts import release_manifest as release
         for host,channel in release.VARIANTS:
             required=release.REQUIRED_NATIVE | ({'local_flattened_tools','native_chat_completions_lazy_tools',
-                                                'native_chat_custom_tools_return_gpt','native_anthropic_tools_return_gpt'} if channel=='proxy' else set())
+                                                'native_chat_custom_tools_return_gpt','native_anthropic_tools_return_gpt'} if channel!='ds' else set())
             coverage={'format':1,'kind':'native-client-with-synthetic-services','platform':host,
                       'native':{name:'passed' for name in required},
                       'regressions':{name:'passed' for name in release.REQUIRED_REGRESSIONS | release.PLATFORM_REGRESSIONS[host]}}

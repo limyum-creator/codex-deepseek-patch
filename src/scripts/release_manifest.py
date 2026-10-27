@@ -16,11 +16,12 @@ from contextlib import ExitStack
 
 SOURCE = Path(__file__).resolve().parents[1]
 ROOT = SOURCE.parent if SOURCE.name == "src" else SOURCE
-CHANNELS = {'ds': 'main', 'proxy': 'codex/existing-proxy-models'}
+LEGACY_CHANNELS = {'ds': 'main', 'proxy': 'codex/existing-proxy-models'}
+CHANNELS = {**LEGACY_CHANNELS, 'unified':'main'}
 VARIANTS = {(host, channel) for host in ('macos', 'windows') for channel in CHANNELS}
 REQUIRED_NATIVE = frozenset((
     'prepared_build_install_validation',
-    'native_catalog_reasoning', 'existing_chat_native_identity_migration',
+    'native_catalog_reasoning', 'existing_chat_native_identity_migration', 'native_cross_provider_message_ids',
     'same_thread_model_switching', 'native_auto_manual_compaction_windows',
     'same_thread_external_after_gpt_quota_exhausted',
     'long_history_compaction_after_gpt_quota_exhausted',
@@ -35,6 +36,16 @@ REQUIRED_NATIVE = frozenset((
     'native_large_image_history_and_compaction', 'native_http_request_compression',
 ))
 REQUIRED_REGRESSIONS = frozenset((
+    'test_message_origins_restore_same_service_and_inline_cross_service_without_reasoning',
+    'test_cross_provider_message_ids_are_removed_on_http_and_websocket',
+    'test_unified_runtime_preserves_legacy_affinity_and_reuses_exact_bridge_core',
+    'test_unified_feed_and_legacy_bridges_are_bound_to_one_core',
+    'test_unified_settings_reopens_active_legacy_directory',
+    'test_manual_unified_upgrade_keeps_baseline_service_affinity',
+    'test_unified_old_ds_can_disable_deepseek_without_losing_other_preferences',
+    'test_uninstall_discovers_latest_owned_build_and_preserves_backups',
+    'test_uninstall_rejects_another_manager_without_changes',
+    'test_unified_launcher_renames_only_verified_legacy_entry',
     'test_native_composer_quota_button_before_inference',
     'test_composer_quota_model_switch_keeps_gpt_and_other_submit_guards',
     'test_composer_interception_failure_keeps_pipe_until_native_exit',
@@ -125,7 +136,7 @@ PLATFORM_REGRESSIONS = {
 
 def validate_coverage(coverage, edition, host):
     required = REQUIRED_NATIVE | ({'local_flattened_tools', 'native_chat_completions_lazy_tools',
-                                  'native_chat_custom_tools_return_gpt','native_anthropic_tools_return_gpt'} if edition == 'proxy' else set())
+                                  'native_chat_custom_tools_return_gpt','native_anthropic_tools_return_gpt'} if edition != 'ds' else set())
     if (host not in PLATFORM_REGRESSIONS or coverage.get('platform') != host
             or coverage.get('format') != 1 or coverage.get('kind') != 'native-client-with-synthetic-services'
             or any(coverage.get('native', {}).get(name) != 'passed' for name in required)
@@ -150,7 +161,7 @@ def distribution(commit):
         return commit
     entries=[];seen=set()
     for name in names:
-        if name in ("patch.py","monitor.py","update.json"):
+        if name in ("patch.py","monitor.py","update.json","unified-update.json"):
             continue
         target=name.removeprefix("src/")
         if target in seen:
@@ -237,7 +248,7 @@ def prepare_pair(commit, output, versions, *, bases=None):
     if 'src/edition.json' not in entries:
         raise ValueError('Paired candidates require the canonical source tree')
     value = {'format': 1, 'source_commit': commit, 'editions': {}}
-    for channel, branch in CHANNELS.items():
+    for channel, branch in LEGACY_CHANNELS.items():
         version = versions[channel]
         if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[\w.-]+)?', version):
             raise ValueError('Use a release version for each independent channel')
@@ -262,9 +273,7 @@ def prepare_pair(commit, output, versions, *, bases=None):
                 prior = git('show', base + ':' + name).decode()
                 # Until a document declares shared edition blocks, preserve the
                 # edition's existing introduction and use shared feature docs.
-                if '<!-- EDITION:proxy -->' not in text:
-                    text = prior.replace(old['version'], version)
-                else:
+                if '<!-- EDITION:proxy -->' in text:
                     text = re.sub(r'<!-- EDITION:proxy -->.*?<!-- /EDITION -->', '', text, flags=re.S)
             else:
                 text = re.sub(r'<!-- EDITION:ds -->.*?<!-- /EDITION -->', '', text, flags=re.S)
@@ -289,9 +298,48 @@ def prepare_pair(commit, output, versions, *, bases=None):
     return value
 
 
+def prepare_unified(commit, output, version):
+    """One product feed; immutable compatibility bridges for pre-unified clients."""
+    commit=git('rev-parse',commit,text=True).strip()
+    output=Path(output).resolve()
+    if output.exists() and any(output.iterdir()):raise ValueError('Candidate output must be empty')
+    if not re.fullmatch(r'\d+\.\d+\.\d+',version):raise ValueError('Use a unified release version')
+    output.mkdir(parents=True,exist_ok=True)
+    base=git('rev-parse','origin/main',text=True).strip()
+    original=_tree(base);bridges=None
+    if 'unified-update.json' in original:
+        previous=json.loads(git('show',base+':unified-update.json'))
+        if previous['version']==version:raise ValueError('A published version cannot be reused')
+        sequence=previous['sequence']+1
+        legacy_feed=git('show',base+':update.json')
+    else:
+        bridges=prepare_pair(commit,output/'legacy',{'ds':version,'proxy':version})
+        sequence=max(v['release']['sequence'] for v in bridges['editions'].values())+1
+        legacy_feed=_json(bridges['editions']['ds']['release'])
+    tree=_tree(commit)
+    tree['src/edition.json']=_blob(_json({'edition':'unified','branch':'main','version':version,'architecture':'official-client-v1'}))
+    tree['update.json']=_blob(legacy_feed)
+    old_version=json.loads(git('show',commit+':src/edition.json'))['version']
+    for name in ('README.md','README.en.md'):
+        tree[name]=_blob(git('show',commit+':'+name).decode().replace(old_version,version).encode())
+    source=_commit(tree,[base,commit],'Prepare unified release '+version)
+    portable=distribution(source);release=create(portable,sequence)
+    release.update(source_commit=source,core_sha256=core_digest(release))
+    if bridges and any(v['release']['core_sha256']!=release['core_sha256'] for v in bridges['editions'].values()):
+        raise ValueError('Legacy bridge and unified runtime differ')
+    feed_tree=_tree(source);feed_tree['unified-update.json']=_blob(_json(release))
+    feed=_commit(feed_tree,[source],'Publish unified release '+version)
+    raw=git('archive','--format=zip',portable);(output/'unified.zip').write_bytes(raw)
+    value={'format':1,'kind':'unified','source_commit':commit,'editions':{'unified':{
+        'release':release,'feed_commit':feed,'expected_head':base,'archive':'unified.zip',
+        'archive_sha256':hashlib.sha256(raw).hexdigest()}},'bridges':bridges}
+    value['id']=candidate_id(value);(output/'candidate.json').write_bytes(_json(value))
+    return value
+
+
 def read_candidate(path):
     value = json.loads(Path(path).read_bytes())
-    if value.get('format') != 1 or value.get('id') != candidate_id(value) or set(value.get('editions', {})) != set(CHANNELS):
+    if value.get('format') != 1 or value.get('id') != candidate_id(value) or set(value.get('editions', {})) not in (set(LEGACY_CHANNELS), {'unified'}):
         raise ValueError('Invalid candidate identity')
     for channel, item in value['editions'].items():
         release = item['release']
@@ -299,6 +347,11 @@ def read_candidate(path):
             raise ValueError('Candidate channel/core identity changed')
     if len({v['release']['core_sha256'] for v in value['editions'].values()}) != 1:
         raise ValueError('Candidate editions have different cores')
+    bridges=value.get('bridges')
+    if bridges:
+        if (bridges.get('id')!=candidate_id(bridges) or set(bridges.get('editions',{}))!=set(LEGACY_CHANNELS)
+                or any(core_digest(v['release'])!=value['editions']['unified']['release']['core_sha256'] for v in bridges['editions'].values())):
+            raise ValueError('Invalid legacy bridge identity')
     return value
 
 
@@ -388,7 +441,7 @@ def verify_candidate(path, channel, app, output):
         prepared=work/'first-install-build'
         (work/'first-install-home').mkdir()
         connection_args=[]
-        if channel=='proxy':
+        if channel!='ds':
             import http.server,threading
             class Metadata(http.server.BaseHTTPRequestHandler):
                 def log_message(self,*args):pass
@@ -453,7 +506,7 @@ def verify_candidate(path, channel, app, output):
 
 def require_receipts(candidate, directory):
     receipts = []
-    for host, channel in sorted(VARIANTS):
+    for host, channel in sorted((h,c) for h in ('macos','windows') for c in candidate['editions']):
         path = Path(directory) / (host + '-' + channel + '.json')
         if not path.is_file():
             raise ValueError('Missing validation: ' + host + '/' + channel)
@@ -479,12 +532,19 @@ def promotion_commands(path, receipts):
     candidate = read_candidate(path)
     require_receipts(candidate, receipts)
     references = []
-    for channel, branch in CHANNELS.items():
-        item = candidate['editions'][channel]
+    for channel, item in candidate['editions'].items():
+        branch=CHANNELS[channel]
         if git('rev-parse', 'origin/' + branch, text=True).strip() != item['expected_head']:
             raise ValueError('A published channel advanced; prepare and verify a new candidate')
         references += [item['release']['commit'] + ':refs/tags/v' + item['release']['version'],
                        item['feed_commit'] + ':refs/heads/' + branch]
+    if candidate.get('bridges'):
+        for channel,item in candidate['bridges']['editions'].items():
+            branch=LEGACY_CHANNELS[channel]
+            if git('rev-parse','origin/'+branch,text=True).strip()!=item['expected_head']:
+                raise ValueError('Legacy channel advanced; rebuild the migration candidate')
+            references.append(item['release']['commit']+':refs/tags/bridge-'+channel+'-v'+item['release']['version'])
+            if channel=='proxy':references.append(item['feed_commit']+':refs/heads/'+branch)
     return ['git', '-c', 'http.version=HTTP/1.1', 'push', '--atomic', 'origin', *references]
 
 
@@ -594,7 +654,7 @@ def build_bootstrap(source, runtime, target, destination):
         metadata={'format':1,**{k:channel[k] for k in ('edition','version')},'target':target,
                   'runtime':{'url':url,'sha256':digest,'python':'3.13.17'},'python':executable,'files':files}
         (root/'bundle.json').write_bytes(_json(metadata))
-        label='DS' if channel['edition']=='ds' else 'Extension'
+        label='Unified'
         if mac:
             macos=app/'Contents/MacOS';macos.mkdir()
             entry=macos/'setup'
@@ -661,6 +721,8 @@ if __name__=="__main__":
     parser.add_argument("--distribution",action="store_true",help="Build a portable source commit from src/")
     parser.add_argument("--output",type=Path,default=ROOT/"update.json")
     parser.add_argument('--prepare-pair', type=Path, metavar='DIRECTORY')
+    parser.add_argument('--prepare-unified', type=Path)
+    parser.add_argument('--version')
     parser.add_argument('--ds-version')
     parser.add_argument('--proxy-version')
     parser.add_argument('--verify-candidate', type=Path)
@@ -681,6 +743,10 @@ if __name__=="__main__":
     if args.bootstrap_source:
         if not args.runtime_archive or not args.target or args.output==ROOT/"update.json":parser.error("Installer needs source, runtime, target and new output directory")
         print(build_bootstrap(args.bootstrap_source,args.runtime_archive,args.target,args.output))
+        raise SystemExit(0)
+    if args.prepare_unified:
+        if not args.commit or not args.version:parser.error('Unified preparation needs a commit and version')
+        print(json.dumps(prepare_unified(args.commit,args.prepare_unified,args.version),indent=2))
         raise SystemExit(0)
     if args.prepare_pair:
         if not args.commit or not args.ds_version or not args.proxy_version:parser.error('Pair preparation needs a commit and both versions')

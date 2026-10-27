@@ -1,33 +1,31 @@
 <img src="src/brand.svg" width="88" alt="Codex Model Patch: a terminal prompt inside a blue whale">
 
-<!-- EDITION:proxy -->
-# Codex Model Extension
+# Codex Model Patch
 
 **Your models, in the original Codex.** Add existing cloud endpoints and local models to the native picker. Keep your login, history and tools, switch within one chat, and manage connections and patch updates in one settings window.
 
-Extension **0.7.0-proxy.1**, update branch `codex/existing-proxy-models`.
-<!-- /EDITION -->
-<!-- EDITION:ds -->
-# Codex × DeepSeek
-
-**Use DeepSeek in the original Codex.** Add DeepSeek Flash alongside GPT, keep your login and native tools, and switch within one chat. Manage credentials, context limits and patch updates in the settings window.
-
-DS **0.7.0-proxy.1**, update branch `main`.
-<!-- /EDITION -->
+Unified **0.9.0** for macOS and Windows. Source and canonical update channel: `main`.
 Updates download and verify ahead of time. One Start click queues installation until requests and tool work have settled; waiting is cancellable and expires after an hour while retaining the package. On the first upgrade from an older service without activity reporting, quit Codex normally to continue. Progress measures bytes or completed checks in the current stage. Startup failure restores the prior patch, and the final Launch Codex button confirms startup.
 
 
 
 [中文](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Validation](docs/VALIDATION.md) · [MIT](LICENSE)
 
-## Editions
+## One edition, two platforms
 
-| Edition | Models | Independent channel |
-| --- | --- | --- |
-| [DS](https://github.com/limyum-creator/codex-deepseek-patch/tree/main) | Native GPT + DeepSeek Flash | `main` |
-| Extension | Native GPT + existing cloud/local services; optional DeepSeek | `codex/existing-proxy-models` |
+DeepSeek, cloud interfaces and local models are optional connections in one product. Unconfigured services are not added automatically. Existing services continue to own subscription login and inference.
 
-The extension does not require DeepSeek. Existing services continue to own subscription login and inference.
+### Existing installations
+
+Check for **0.9.0** in the current whale settings, or let enabled monitoring discover it. Each legacy DS/extension feed delivers one compatibility upgrade; subsequent checks use the single unified feed. An equivalent bridge and canonical package do not require a second installation of the same version.
+
+Existing login, credential references, selected/hidden models, reduced context/compaction windows and maintenance preferences are retained. Existing service identities and directories remain for ownership and rollback, while the launcher becomes “Codex 模型设置”. Legacy feed URLs stay available for users who update later.
+
+For manual installations without monitoring, prepare with the new source and the original build as `--baseline`, retain that build, then quit Codex normally before installation.
+
+### First installation
+
+Download and extract the source ZIP, or clone `main`. Python 3.11+ is required. From that directory run `python3 patch.py settings` on macOS or `python patch.py settings` in Windows PowerShell. Choose DeepSeek quick setup or a compatible/local interface, save and detect, prepare and verify, then quit Codex and install. Disconnect Codex in any existing model manager before installing this patch.
 
 ## Using DeepSeek after GPT quota is exhausted
 
@@ -54,11 +52,10 @@ Python 3.11+ and the official macOS/Windows Codex app are required. No separate 
 
 Composer predictions follow the official client's feature gates, supported models, sampling and request deadline, and require an eligible completed chat with an empty composer. Native prediction requests and actual composer display are validated separately. Update windows are explicitly labeled **Codex Model Patch Update**, with the DS/extension channel; the official app retains its own updater.
 
-<!-- EDITION:proxy -->
 ## Connect and install
 
 ```sh
-git clone --branch codex/existing-proxy-models https://github.com/limyum-creator/codex-deepseek-patch.git
+git clone --branch main https://github.com/limyum-creator/codex-deepseek-patch.git
 cd codex-deepseek-patch
 python3 patch.py connect --name local --kind ollama --url http://127.0.0.1:11434/v1
 ```
@@ -77,22 +74,6 @@ python3 monitor.py enable --app /Applications/ChatGPT.app --baseline /absolute/p
 
 On Windows use `python`, Windows paths, and omit `--app` to discover the official installation. Existing EasyCLI/CLIProxyAPI can be selected with `--proxy-config /absolute/path/config.yaml` and optionally `--proxy-base-url`. Combine connections and proxy options as needed. DeepSeek is opt-in: `setup-key`, then build with `--with-deepseek`.
 
-<!-- /EDITION -->
-<!-- EDITION:ds -->
-## Prepare and install
-
-```sh
-git clone --branch main https://github.com/limyum-creator/codex-deepseek-patch.git
-cd codex-deepseek-patch
-python3 patch.py setup-key
-python3 patch.py build --app /Applications/ChatGPT.app --with-deepseek --output /absolute/path/build --verify
-# Quit Codex, then activate:
-python3 patch.py install /absolute/path/build
-python3 monitor.py enable --app /Applications/ChatGPT.app --baseline /absolute/path/build
-```
-
-On Windows use `python`, Windows paths, and omit `--app` for official-install discovery.
-<!-- /EDITION -->
 
 Verification uses the original CLI, isolated state and synthetic local endpoints in the background, without GUI launches or paid inference. Installation requires successful validation. For legacy migration, supply `--baseline`; on Mac point `--app` to its verified `original.app` backup and `--install-target` to the installed app. Only this first transition restores the official app.
 
@@ -116,7 +97,7 @@ Updates combines patch checks/retries, independent model synchronization, progre
 
 A new patch adds a small droplet beside the whale and tints the Updates button pale red. Background notifications reveal the badge without opening a settings card or taking focus. Click either entry to see the version and live progress in the same settings host. Closing the card or hiding the whale leaves the update running.
 
-Start Update requests a normal Codex exit only after preparation and validation. Installation asks you to keep Codex closed. Completion restores the normal button color and offers Launch Codex without launching it automatically. Known work units show real counts; unknown-duration phases use an activity bar. Repeated checks do not repeatedly reveal the same notice. During a legacy upgrade, the integrated UI is available after the new components are downloaded. Both release channels stay independent.
+Start Update requests a normal Codex exit only after preparation and validation. Installation asks you to keep Codex closed. Completion restores the normal button color and offers Launch Codex without launching it automatically. Known work units show real counts; unknown-duration phases use an activity bar. Repeated checks do not repeatedly reveal the same notice. During a legacy upgrade, the integrated UI is available after the new components are downloaded. Future updates use one unified feed; legacy URLs are retained for migration.
 
 ## Maintenance
 
@@ -147,4 +128,10 @@ Dot uses the official client's own cloud WebSocket. Repeated reconnects can come
 
 The root `patch.py` and `monitor.py` remain the public command entries. Implementation, internal tests and maintenance scripts live under [`src/`](src/); design and validation notes live in [`docs/`](docs/). Portable release packages preserve historical paths for existing automatic updaters. Source organization adds no runtime service. Model-only synchronization stages quietly and arms a temporary process-exit observer and applies after app exit; a fast relaunch safely defers installation; new code releases retain the update window.
 
-Updates prefer one immutable source archive with exact per-file verification and retain the legacy download fallback. Explicit checks are queued behind busy work. Conservative cleanup protects active installations, recovery references and recent rollback artifacts. Both editions are generated from one core and require matching macOS/Windows validation receipts before their separate feeds are promoted together.
+Updates prefer one immutable source archive with exact per-file verification and retain the legacy download fallback. Explicit checks are queued behind busy work. Conservative cleanup protects active installations, recovery references and recent rollback artifacts. One unified package requires matching macOS/Windows receipts. Legacy migration bridges are generated once from that same core.
+
+## Uninstall and restore native Codex
+
+Save work and fully quit Codex. Use the whale's Update → Installation and recovery → Uninstall and restore native Codex, or run `python3 patch.py uninstall` from the source folder (Windows: `python patch.py uninstall`). Add `--dry-run` to inspect the detected target without changes. A build path is normally discovered automatically; custom installations can supply `--state-dir` or the retained `--build`. Ambiguous or independently managed configuration is preserved.
+
+The command disables this patch's monitoring/adapter, removes unchanged owned launchers and managed image tools, restores owned configuration, and retains chats, login, credentials and recovery backups. It saves a pre-uninstall configuration copy. Repeat the same command to continue an interrupted restore. Do not delete the Codex data directory. External-model compatibility ends after removal; saved external chats remain readable, and a new GPT chat can use a readable handoff if native GPT cannot resume provider-private history.

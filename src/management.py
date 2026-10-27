@@ -48,14 +48,27 @@ def require(value, message, code='invalid_input'):
 def find_directory(explicit=None):
     if explicit is not None:return Path(explicit).expanduser().resolve()
     default = monitor.default_directory()
+    candidates=[]
     for path in (default, default.parent/'monitor-proxy', default.parent/'monitor-ds'):
-        if monitor.load_json(path/'settings.json', {}).get('edition') == p.EDITION:return path
-    return default
+        settings=monitor.load_json(path/'settings.json', {})
+        if not p.runtime_accepts(p.EDITION, settings.get('edition')):continue
+        candidates.append(path)
+        try:
+            current=p.tomllib.loads(p.read_config(Path(settings['codex_home'])/'config.toml'))
+            baseline=monitor.load_json(path/'state.json',{}).get('installed',{}).get('baseline') or settings.get('baseline')
+            if baseline and current.get('model_catalog_json') and Path(current['model_catalog_json']).parent.resolve()==Path(baseline).resolve():return path
+        except (KeyError,OSError,ValueError):pass
+    require(len(candidates)<=1,'找到多个旧安装，请用 --state-dir 指定当前使用的设置目录。','ambiguous_installation')
+    return candidates[0] if candidates else default
 
 
 # First installation uses the same native cards and the existing installer.
 def needs_setup(directory):
     return not (Path(directory)/'settings.json').exists()
+
+
+def setup_deepseek(draft):
+    return draft.get('connection_mode', 'deepseek' if p.EDITION in ('ds','unified') else 'compatible') == 'deepseek'
 
 
 def setup_read(directory):
@@ -98,6 +111,20 @@ def setup_dispatch(directory, payload, expected=None, cancelled=None):
     directory=Path(directory);intent=payload.get('intent','refresh');values=payload.get('values') or {}
     require(isinstance(values,dict),'无效的首次安装表单。')
     if intent in ('navigate','refresh'):return setup_view(directory)
+    if intent in ('setup_deepseek','setup_compatible'):
+        root=monitor.private_directory(directory/'setup')
+        with monitor.state_lock(root) as locked:
+            require(locked,'首次设置正在处理中。','busy')
+            require(expected==setup_revision(directory),'草稿已改变，请刷新后重试。','stale_revision')
+            draft=setup_read(directory)
+            require(draft.get('phase','draft')=='draft','请先取消当前准备状态。')
+            mode='deepseek' if intent=='setup_deepseek' else 'compatible'
+            key=root/'credential.key'
+            if key.exists() and mode!=draft.get('connection_mode','deepseek' if setup_deepseek(draft) else 'compatible'):
+                key.replace(root/('credential-before-switch-'+uuid.uuid4().hex+'.key'))
+            draft.update(edition=p.EDITION,phase='draft',connection_mode=mode)
+            monitor.atomic_json(root/'draft.json',draft)
+        return setup_view(directory)
     require(intent in ('setup_save','setup_prepare','setup_install'),'请先完成首次设置。','not_installed')
     root=monitor.private_directory(directory/'setup')
     with monitor.state_lock(root) as locked:
@@ -114,13 +141,14 @@ def setup_dispatch(directory, payload, expected=None, cancelled=None):
             secret=values.get('key','');require(isinstance(secret,str) and len(secret)<=2560 and not any(ord(c)<33 for c in secret),'API Key 格式不正确。')
             new={'edition':p.EDITION,'phase':'draft','app':str(app),'home':str(home),
                  'maintenance':values.get('maintenance') is True,
+                 'connection_mode':'deepseek' if setup_deepseek(draft) else 'compatible',
                  'config_digest':hashlib.sha256(p.read_config(home/'config.toml').encode()).hexdigest()}
             setup_guard(new)
             __import__('official_client').inspect(app)  # Signed source, no launch or login access.
             key_path=root/'credential.key';old_key=key_path.read_bytes() if key_path.exists() else None
             try:
                 if secret:private_write(key_path,secret.encode())
-                if p.EDITION=='ds':
+                if setup_deepseek(draft):
                     require(key_path.is_file(),'请填写 DeepSeek API Key。')
                     new['key_service']=draft.get('key_service') or ('Codex DeepSeek API Key '+uuid.uuid4().hex[:12])
                     notice='官方应用检查通过，密钥已私密保存。'
@@ -156,7 +184,7 @@ def setup_dispatch(directory, payload, expected=None, cancelled=None):
             setup_guard(draft)
             output=directory/'builds'/('setup-'+uuid.uuid4().hex)
             args=['build','--app',draft['app'],'--codex-home',draft['home'],'--output',str(output),'--bundled-catalog','--verify']
-            if p.EDITION=='ds':args+=['--with-deepseek','--keychain-service',draft['key_service']]
+            if setup_deepseek(draft):args+=['--with-deepseek','--keychain-service',draft['key_service']]
             else:
                 require(draft['connection']['models'],'请先选择要接入的型号。')
                 monitor.atomic_json(root/'connections.json',{'locals':[draft['connection']]})
@@ -174,16 +202,16 @@ def setup_dispatch(directory, payload, expected=None, cancelled=None):
             result=recover(build)
             require(result.get('status')=='committed','请先恢复中断的安装事务。')
             draft['phase']='installed';monitor.atomic_json(root/'draft.json',draft)
-            if p.EDITION=='ds':(root/'credential.key').unlink(missing_ok=True)
+            if setup_deepseek(draft):(root/'credential.key').unlink(missing_ok=True)
         if draft['phase']=='prepared':
             setup_guard(draft)
             require(p.file_sha(build/'manifest.json')==draft['manifest_digest'],'候选已改变，请重新准备。')
             p.require_stopped(Path(draft['app']),read_only_source=True)
-            if p.EDITION=='ds':
+            if setup_deepseek(draft):
                 save_deepseek_key({'keychain_service':draft['key_service'],'keychain_account':__import__('getpass').getuser()},manifest,(root/'credential.key').read_text(encoding='utf-8'))
             p.install(SimpleNamespace(directory=build))
             draft['phase']='installed';monitor.atomic_json(root/'draft.json',draft)
-            if p.EDITION=='ds':(root/'credential.key').unlink(missing_ok=True)
+            if setup_deepseek(draft):(root/'credential.key').unlink(missing_ok=True)
         # A failed monitor registration is resumable without another install.
         monitor.enable(SimpleNamespace(state_dir=directory,baseline=build,app=Path(draft['app']),codex_home=Path(draft['home']),
             interval=300,no_code_updates=not draft['maintenance'],no_model_sync=not draft['maintenance'],
@@ -195,11 +223,11 @@ def setup_dispatch(directory, payload, expected=None, cancelled=None):
 def records(directory):
     directory = Path(directory)
     settings = monitor.load_json(directory/'settings.json', {})
-    require(settings.get('edition') == p.EDITION, '请使用与已安装版本对应的设置入口。', 'edition_mismatch')
+    require(p.runtime_accepts(p.EDITION, settings.get('edition')), '请使用与已安装版本对应的设置入口。', 'edition_mismatch')
     require(settings.get('baseline') and settings.get('codex_home'), '尚未找到已安装的适配层，请先完成首次安装。', 'not_installed')
     build = Path(settings['baseline'])
     manifest = monitor.load_json(build/'manifest.json', {})
-    require(manifest.get('edition') == p.EDITION and manifest.get('architecture') == 'official-client-v1',
+    require(p.runtime_accepts(p.EDITION, manifest.get('edition')) and manifest.get('architecture') == 'official-client-v1',
             '请先迁移到原生适配版本，再使用设置窗口。', 'migration_required')
     return settings, build, manifest
 
@@ -277,7 +305,7 @@ def snapshot(directory):
     current = p.tomllib.loads(p.read_config(Path(settings['codex_home'])/'config.toml'))
     jobs = recovery_jobs(settings['codex_home'])
     return {'format': 1, 'revision': revision(directory), 'edition': p.EDITION,
-        'edition_label': 'DS 版' if p.EDITION == 'ds' else '扩展版',
+        'edition_label': '统一版',
         'version': manifest.get('tool_version'), 'app_version': manifest.get('app_version'),
         'phase': state.get('phase', 'idle'), 'status': PHASES.get(state.get('phase'), '等待检查'),
         'queued': (directory/'monitor.request.json').is_file(),
@@ -292,7 +320,7 @@ def snapshot(directory):
         'last_checked_at': state.get('last_checked_at'),
         'progress': hub_progress(directory),
         'help_url': 'https://github.com/limyum-creator/codex-deepseek-patch/tree/' +
-                    ('main' if p.EDITION == 'ds' else 'codex/existing-proxy-models')}
+                    'main'}
 
 
 def recovery_jobs(home):
@@ -503,7 +531,7 @@ def perform(directory, action, payload=None, expected=None, cancelled=None):
         require(payload.get('confirmed') is True,'请先确认恢复操作。')
         require(not p.active_app_processes(Path(settings['app']),read_only_source=True), '请先正常退出 Codex，再执行恢复。','app_running')
         if action=='restore':
-            p.restore(SimpleNamespace(directory=build,state_dir=directory,settings_revision=expected))
+            return p.uninstall(SimpleNamespace(state_dir=directory,settings_revision=expected))
         else:
             with edit_lock(directory,expected,cancelled):
                 from official_client_install import recover
@@ -516,7 +544,6 @@ def perform(directory, action, payload=None, expected=None, cancelled=None):
         settings, build, manifest = records(directory)
         document = connection_document(directory,manifest)
         if action in ('save_connection','remove_connection'):
-            require(p.EDITION=='proxy','此功能需要扩展版。','edition_feature')
             if action=='save_connection':
                 connection = _validate_connection(payload['connection'])
                 identifier = connection['id']
@@ -539,7 +566,6 @@ def perform(directory, action, payload=None, expected=None, cancelled=None):
                 raise
             changed_models=True
         elif action=='save_proxy':
-            require(p.EDITION=='proxy','此功能需要扩展版。','edition_feature')
             from proxy_support import validate
             value = payload.get('proxy')
             if value is None and document.get('proxy'):
@@ -553,7 +579,7 @@ def perform(directory, action, payload=None, expected=None, cancelled=None):
             monitor.atomic_json(directory/'connections.json',document);changed_models=True
         elif action=='save_deepseek':
             enabled = payload.get('enabled')
-            require(type(enabled) is bool and (enabled or p.EDITION=='proxy'),'DS 版需要启用 DeepSeek。')
+            require(type(enabled) is bool,'请选择是否启用 DeepSeek。')
             secret = payload.get('key')
             if secret:
                 require(isinstance(secret,str) and len(secret)<=2560 and not any(ord(c)<33 for c in secret),'API Key 格式不正确。')
@@ -803,44 +829,8 @@ def bubble_assets(directory):
 
 
 def brand_assets(directory):
-    """Rasterize our small vector mark once, using only the standard library."""
-    import struct,zlib,math,xml.etree.ElementTree as ET
-    raw=(ROOT/'brand.svg').read_bytes();digest=p.sha(raw)
-    directory=Path(directory);stamp=directory/'brand.json'
-    paths={name:directory/('brand.'+name) for name in ('png','ico','icns')}
-    if monitor.load_json(stamp,{}).get('source')==digest and all(path.is_file() for path in paths.values()):
-        return digest,paths
-    size=512;pixels=bytearray(size*size*4)
-    for shape in ET.fromstring(raw):
-        kind=shape.tag.rsplit('}',1)[-1]
-        if kind not in ('polygon','path'):continue
-        color=bytes.fromhex(shape.attrib['fill'].lstrip('#'))+b'\xff'
-        contours=vector_contours(shape.attrib['d']) if kind=='path' else [
-            [tuple(map(float,value.split(','))) for value in shape.attrib['points'].split()]]
-        points=[v for contour in contours for v in contour]
-        for y in range(max(0,math.floor(min(v[1] for v in points))),min(size,math.ceil(max(v[1] for v in points)))):
-            scan=y+.5;crossings=[]
-            for contour in contours:
-                for (x1,y1),(x2,y2) in zip(contour,contour[1:]+contour[:1]):
-                    if (y1<=scan<y2) or (y2<=scan<y1):crossings.append(x1+(scan-y1)*(x2-x1)/(y2-y1))
-            crossings.sort()
-            for left,right in zip(crossings[::2],crossings[1::2]):
-                first=max(0,math.ceil(left-.5));last=min(size,math.ceil(right-.5))
-                if last>first:pixels[(y*size+first)*4:(y*size+last)*4]=color*(last-first)
-    smaller=bytearray()
-    for y in range(256):
-        smaller.append(0)  # PNG filter byte.
-        for x in range(256):
-            samples=[pixels[((y*2+dy)*size+x*2+dx)*4:((y*2+dy)*size+x*2+dx)*4+4] for dy in (0,1) for dx in (0,1)]
-            opaque=[v for v in samples if v[3]]
-            smaller.extend(bytes([sum(v[k] for v in opaque)//len(opaque) for k in range(3)]+[len(opaque)*255//4]) if opaque else b'\0\0\0\0')
-    def chunk(name,data):return struct.pack('>I',len(data))+name+data+struct.pack('>I',zlib.crc32(name+data))
-    png=b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',256,256,8,6,0,0,0))+chunk(b'IDAT',zlib.compress(smaller,9))+chunk(b'IEND',b'')
-    outputs={'png':png,'ico':struct.pack('<HHHBBBBHHII',0,1,1,0,0,0,0,1,32,len(png),22)+png,
-             'icns':b'icns'+struct.pack('>I',len(png)+16)+b'ic08'+struct.pack('>I',len(png)+8)+png}
-    for kind,data in outputs.items():private_write(paths[kind],data)
-    monitor.atomic_json(stamp,{'source':digest})
-    return digest,paths
+    from update_worker import brand_assets as render
+    return render(directory, ROOT/'brand.svg')
 
 
 def ensure_launcher(directory):
@@ -854,7 +844,7 @@ def ensure_launcher(directory):
     owned=monitor.load_json(ui/'launcher.json',{})
     python=str(windowless_python(settings.get('python_path') or sys.executable))
     command=[python,str(runtime/'management.py'),'launch','--state-dir',str(directory)]
-    label='Codex 模型设置（'+('DS 版' if p.EDITION=='ds' else '扩展版')+'）'
+    label='Codex 模型设置'
     brand_digest=p.file_sha(ROOT/'brand.svg')
     if sys.platform=='darwin':
         destination=Path.home()/'Applications'/(label+'.app')
@@ -871,6 +861,17 @@ def ensure_launcher(directory):
         files=None
     else:raise SettingsError('unsupported_platform','设置入口支持 macOS 和 Windows。')
     require(not destination.is_symlink(),'设置入口路径已被占用。')
+    old=Path(owned['path']) if owned.get('path') else None
+    if old and old!=destination and old.exists():
+        require(old.parent==destination.parent and old.stem in ('Codex 模型设置（DS 版）','Codex 模型设置（扩展版）')
+                and not old.is_symlink() and not destination.exists(),'请核对已有设置入口，文件已保留。')
+        require(bool(owned.get('files')),'缺少旧入口的所有权记录。')
+        for name,digest in owned['files'].items():
+            path=old/name if old.is_dir() else old
+            require(path.is_file() and not path.is_symlink() and p.file_sha(path)==digest,'旧设置入口已被修改，文件已保留。')
+        old.rename(destination)
+        owned['path']=str(destination)
+        monitor.atomic_json(ui/'launcher.json',owned)
     if destination.exists():
         require(owned.get('path')==str(destination),'已有同名入口，请保留并手动调整名称。')
         for name,digest in owned.get('files',{}).items():
@@ -1162,7 +1163,7 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
     elif route=='connections':
         data['subtitle']='凭证保留在本机；接入已有服务。'
         rows.append(hub_item('DeepSeek','已启用' if state['deepseek_enabled'] else '按需启用','connections/deepseek'))
-        if state['edition']=='proxy':
+        if state['edition'] in p.INSTALL_AFFINITIES:
             rows.append(hub_item('现成代理','已连接' if state['proxy'] else 'EasyCLI / CPA','connections/proxy'))
             for connection in state['connections']:
                 rows.append(hub_item(connection.get('name') or connection['id'],
@@ -1173,10 +1174,8 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
         data['title']='DeepSeek'
         rows += [hub_field('enabled','启用 DeepSeek',state['deepseek_enabled'],'toggle'),
                  hub_field('key','API Key','','secret',hint='留空保留已有密钥')]
-        if state['edition']=='ds':rows[0]={'type':'note','text':'DS 版始终启用 DeepSeek。'}
         buttons.append(hub_button('保存','save_deepseek',style='primary'))
     elif route=='connections/proxy':
-        require(state['edition']=='proxy','此功能需要扩展版。')
         proxy=state['proxy'] or state['disabled_proxy'] or {}
         data['title']='现成代理'
         rows += [hub_field('url','接口地址',proxy.get('base_url','http://127.0.0.1:8317/v1')),
@@ -1185,7 +1184,6 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
                  hub_field('auto','加入现有系列的新版本',state['proxy_auto_add'],'toggle')]
         buttons += [hub_button('停用','disable_proxy'),hub_button('保存','save_proxy',style='primary')]
     elif route=='connections/edit':
-        require(state['edition']=='proxy','此功能需要扩展版。')
         connection=next((c for c in state['connections'] if c['id']==key),None) if key else None
         require(not key or connection is not None,'连接已变更，请重新选择。')
         c=connection or {}
@@ -1232,7 +1230,7 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
                  hub_item('诊断报告','查看失败阶段和近期请求','diagnostics')]
         buttons += [hub_button('同步模型','sync_models'),hub_button('检查更新','check_updates',style='primary')]
     elif route=='updates/options':
-        data['title']='更新设置';data['subtitle']='两个版本各自更新，保留手动模型设置。'
+        data['title']='更新设置';data['subtitle']='统一更新，保留已有模型和个人设置。'
         rows += [hub_field('auto_update','自动更新补丁',state['options']['auto_update'],'toggle'),
                  hub_field('model_sync','同步模型与规格',state['options']['model_sync'],'toggle'),
                  hub_field('progress_ui','显示鲸鱼更新提醒',state['options']['progress_ui'],'toggle'),
@@ -1294,7 +1292,7 @@ def hub_view(directory, route='models', key=None, notice=None, *, extra=None):
         rows += [{'type':'action',**hub_button('重试补丁更新','retry_update')},
                  {'type':'action',**hub_button('清理过期缓存','cleanup_preview')},
                  {'type':'action',**hub_button('恢复中断的安装','confirm_recover')},
-                 {'type':'action',**hub_button('撤销模型补丁','confirm_restore',style='danger')},
+                 {'type':'action',**hub_button('卸载并恢复原生 Codex','confirm_restore',style='danger')},
                  {'type':'note','text':'恢复操作会保留官方应用、登录和聊天记录。'}]
     else:require(False,'未知设置页面。')
     data['footer']=footer_layout(buttons,bool(data.get('back')))
@@ -1350,7 +1348,7 @@ def hub_dispatch(directory, payload, revision, cancelled=None):
             'compact':None if intent=='reset_model' else hub_number(values.get('compact')),
             'visible':values.get('visible',True)})
     elif intent=='save_deepseek':
-        perform(intent,{'enabled':state['edition']=='ds' or values.get('enabled') is True,'key':values.get('key','')})
+        perform(intent,{'enabled':values.get('enabled') is True,'key':values.get('key','')})
     elif intent in ('save_proxy','disable_proxy'):
         perform('save_proxy',{'proxy':None if intent=='disable_proxy' else
             {'base_url':values.get('url',''),'config':values.get('config',''),'models':hub_list(values.get('models'))},
@@ -1411,7 +1409,7 @@ def hub_dispatch(directory, payload, revision, cancelled=None):
         perform(intent,{'id':payload.get('id')})
     elif intent in ('confirm_remove','confirm_restore','confirm_recover','cleanup_preview'):
         labels={'confirm_remove':('移除连接','服务、凭证和聊天记录保留。','remove_connection'),
-                'confirm_restore':('撤销模型补丁','请先正常退出 Codex；保留原应用、账户与聊天。','restore'),
+                'confirm_restore':('卸载并恢复原生 Codex','请先正常退出 Codex；保留原应用、账户与聊天。','restore'),
                 'confirm_recover':('恢复安装','请先正常退出 Codex，再恢复中断的安装。','recover')}
         if intent=='cleanup_preview':
             result=perform(intent);labels[intent]=('清理缓存',f"预计释放 {result['bytes']/1048576:.1f} MB；保留当前安装和回退链。",'cleanup')
@@ -1424,7 +1422,7 @@ def hub_dispatch(directory, payload, revision, cancelled=None):
         m.require(action in ('remove_connection','restore','recover','cleanup'),'无效的确认操作。')
         result=perform(action,{'id':key} if action=='remove_connection' else {'confirmed':True})
         if action=='restore':
-            return {'route':'preferences','title':'已撤销模型补丁','rows':[{'type':'note','text':result.get('message','设置窗口可以关闭。')}],
+            return {'route':'preferences','title':'已卸载并恢复原生 Codex','rows':[{'type':'note','text':result.get('message','设置窗口可以关闭。')}],
                     'buttons':[hub_button('退出','quit')],'revision':revision,'options':hub_options(directory)}
         if action=='remove_connection':route='connections';key=None
     else:m.require(False,'未知设置操作。')
