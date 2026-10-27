@@ -878,7 +878,7 @@ def ensure_launcher(directory):
         for name,digest in owned.get('files',{}).items():
             path=destination/name if destination.is_dir() else destination
             require(path.is_file() and not path.is_symlink() and p.file_sha(path)==digest,'设置入口已被用户修改，已保留。')
-        if owned.get('command')==command and owned.get('brand')==brand_digest:return str(destination)
+        if owned.get('command')==command and owned.get('brand')==brand_digest and owned.get('label')==label:return str(destination)
     _,brand=brand_assets(ui)
     if files is not None:files['Contents/Resources/model-patch-'+brand_digest[:12]+'.icns']=brand['icns'].read_bytes()
     destination.parent.mkdir(parents=True,exist_ok=True)
@@ -906,7 +906,7 @@ def ensure_launcher(directory):
         _atomic(destination,staged.read_bytes());staged.unlink()
         ctypes.windll.shell32.SHChangeNotify(0x00002000,0x0005,str(destination),None)
         hashes={'':p.file_sha(destination)}
-    monitor.atomic_json(ui/'launcher.json',{'format':1,'edition':p.EDITION,'path':str(destination),'command':command,'files':hashes,'brand':brand_digest})
+    monitor.atomic_json(ui/'launcher.json',{'format':1,'edition':p.EDITION,'path':str(destination),'command':command,'files':hashes,'brand':brand_digest,'label':label})
     return str(destination)
 
 

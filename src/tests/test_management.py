@@ -381,12 +381,18 @@ class SettingsTests(unittest.TestCase):
         with patch.object(Path,'home',return_value=self.root/'user'),patch.dict(os.environ,{'APPDATA':str(self.root/'appdata')}):
             destination=Path(ui.ensure_launcher(self.root));old=destination.with_name('Codex 模型设置（扩展版）'+destination.suffix)
             destination.rename(old)
-            info=ui.monitor.load_json(self.root/'settings-ui/launcher.json');info['path']=str(old)
+            info=ui.monitor.load_json(self.root/'settings-ui/launcher.json');info['path']=str(old);info.pop('label',None)
+            if sys.platform=='darwin':
+                import plistlib
+                metadata=old/'Contents/Info.plist';value=plistlib.loads(metadata.read_bytes())
+                value['CFBundleDisplayName']='Codex 模型设置（扩展版）';metadata.write_bytes(plistlib.dumps(value))
+                info['files']['Contents/Info.plist']=ui.p.file_sha(metadata)
             self.save(self.root/'settings-ui/launcher.json',info)
             with patch.object(ui.p,'EDITION','unified'):
                 self.assertEqual(ui.ensure_launcher(self.root),str(destination))
             self.assertFalse(old.exists());self.assertTrue(destination.exists())
             self.assertEqual(ui.monitor.load_json(self.root/'settings-ui/launcher.json')['path'],str(destination))
+            if sys.platform=='darwin':self.assertEqual(plistlib.loads((destination/'Contents/Info.plist').read_bytes())['CFBundleDisplayName'],'Codex 模型设置')
 
     @unittest.skipUnless(sys.platform in ('darwin','win32'),'Per-user native entry')
     def test_uninstall_removes_only_unchanged_owned_launcher(self):
