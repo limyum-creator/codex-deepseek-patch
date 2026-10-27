@@ -231,7 +231,7 @@ class Monitor:
                 from update_progress import Progress
                 progress=Progress(self.directory)
                 settings=load_json(self.directory/'settings.json',{})
-                if progress.read().get('edition')==settings.get('edition') and settings.get('edition') in ('ds','proxy'):
+                if progress.read().get('edition')==settings.get('edition') and settings.get('edition') in ('ds','proxy','unified'):
                     progress.present()
                     return
             self.notifier(kind, message)
@@ -680,12 +680,16 @@ def enable(args):
     import patch
     from updater import edition
     channel=edition()['edition']
+    installed_edition=channel
     baseline=getattr(args,'baseline',None) or existing.get('baseline')
     if baseline:
         record=load_json(Path(baseline)/'manifest.json',{})
         installed_edition=record.get('edition','proxy' if record.get('proxy') else 'ds')
-        if record and installed_edition!=channel:raise ValueError('The baseline belongs to another edition; use its matching update channel')
-    if existing.get('edition',channel)!=channel:raise ValueError('This monitor directory is pinned to another edition')
+        if record and not patch.runtime_accepts(channel,installed_edition):raise ValueError('The baseline belongs to another edition; use its matching update channel')
+    if not patch.runtime_accepts(channel,existing.get('edition',channel)):raise ValueError('This monitor directory is pinned to another installation')
+    if baseline and existing.get('edition') and existing['edition']!=installed_edition:
+        raise ValueError('The baseline and monitor belong to different installations')
+    channel=existing.get('edition',installed_edition)
     settings = {**existing, "format": FORMAT, "interval": args.interval,
                 "bundled_catalog": True, "enabled_at": timestamp()}
     settings.update(edition=channel,state_dir=str(directory),auto_update=not getattr(args,'no_code_updates',False),

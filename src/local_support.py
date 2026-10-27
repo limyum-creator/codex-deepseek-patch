@@ -252,7 +252,7 @@ def connect(args):
     import patch,monitor
     directory=args.state_dir.resolve();directory.mkdir(parents=True,exist_ok=True)
     settings=monitor.load_json(directory/'settings.json',{})
-    if settings.get('edition','proxy')!='proxy':raise ValueError('Local models require the extension edition')
+    if settings.get('edition','unified') not in patch.INSTALL_AFFINITIES:raise ValueError('Unknown model-adapter installation')
     url=args.url or input('Local / compatible API URL (ends in /v1): ').strip()
     kind=args.kind or ('ollama' if ':11434' in url or ':21434' in url else 'lmstudio' if ':1234' in url else 'openai')
     identifier='local-'+args.name

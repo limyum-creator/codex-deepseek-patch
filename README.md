@@ -1,29 +1,41 @@
 <img src="src/brand.svg" width="88" alt="Codex 模型补丁：代码光标与蓝鲸">
 
-# Codex 模型扩展
+# Codex 模型补丁
 
 **你的模型，原版 Codex。**
 
 把已有云端接口和本地模型加入 Codex 的模型菜单。保留原登录、聊天记录与原生工具，在同一个聊天里切换模型，用一个设置窗口管理连接和自动更新。
 
-扩展版 **0.8.2-proxy.1** · 更新分支 `codex/existing-proxy-models`
-
+统一版 **0.9.0** · macOS / Windows · 源码与统一更新入口：`main`
 更新会提前下载并校验。点击一次“开始更新”后，准备完成并等待任务空闲再安装；等待可取消，超过一小时保留更新包。旧版服务首次升级若无法报告任务状态，请正常退出 Codex，随后自动继续。进度按当前阶段的实际字节或完成项显示，新服务启动失败会恢复上一版；完成后可点击“启动 Codex”。
 
 
 
 [English](README.en.md) · [验证记录](docs/VALIDATION.md) · [实现说明](docs/ARCHITECTURE.md) · [MIT](LICENSE)
 
-## 两个版本
+## 一个版本，两个系统
 
-| 版本 | 接入范围 | 更新通道 |
-| --- | --- | --- |
-| [DS 版](https://github.com/limyum-creator/codex-deepseek-patch/tree/main) | 原生 GPT + DeepSeek Flash | `main` |
-| [扩展版](https://github.com/limyum-creator/codex-deepseek-patch/tree/codex/existing-proxy-models) | 原生 GPT + 已有云端接口 / 本地服务；DeepSeek 可选 | `codex/existing-proxy-models` |
+DeepSeek、已有云端接口和本地模型按需启用，功能不再分 DS 版和扩展版。没有配置的服务不会被自动添加；外部服务继续管理自己的订阅登录。
 
-首次升级时，若旧设置窗口仍开着，请先保存并关闭它；新版小窗会随后接入，保留正在编辑的内容。
+### 旧用户自动迁移
 
-两个版本分别发布、分别更新。扩展版不要求配置 DeepSeek，也不管理外部服务的订阅登录。
+1. 在现有鲸鱼的“更新”页检查并开始更新，或等待已开启的自动监测发现 **0.9.0**。
+2. DS 和扩展版的旧通道各提供一次兼容升级。升级后功能统一，后续读取同一个更新源；同版本相同代码不会再要求重复安装。
+3. 原有账号登录、密钥引用、模型选择、隐藏型号、上下文调小值、压缩设置和维护偏好继续保留。仅用 DeepSeek 的用户升级后仍只显示已选择的模型。
+4. 旧设置入口自动换成“Codex 模型设置”。底层旧服务名和目录保留用于恢复与所有权校验，不需要手动删除或搬动。
+
+没有启用自动监测的手动安装用户，请用新版源码、原 build 作为 `--baseline` 准备更新；保留原 build 和配置备份，正常退出 Codex 后安装。两个旧更新地址会保留，晚更新的用户也能完成迁移。
+
+### 首次安装入口
+
+下载源码 ZIP 并解压，或克隆 `main`。需要 Python 3.11+。在源码目录打开终端：
+
+| 系统 | 打开设置 |
+| --- | --- |
+| macOS | `python3 patch.py settings` |
+| Windows PowerShell | `python patch.py settings` |
+
+首次卡片可选择 **DeepSeek 快速接入**，或 **兼容接口 / 本地模型**，随后保存检测、准备验证、正常退出 Codex 并安装。手动命令见下文。已使用其他模型管理器时，先在原管理器中断开 Codex，再安装本补丁。
 
 ## 这一版怎么工作
 
@@ -50,7 +62,7 @@
 ## 接入已有服务
 
 ```sh
-git clone --branch codex/existing-proxy-models https://github.com/limyum-creator/codex-deepseek-patch.git
+git clone --branch main https://github.com/limyum-creator/codex-deepseek-patch.git
 cd codex-deepseek-patch
 ```
 
@@ -80,14 +92,14 @@ python3 patch.py connect --name compatible --kind openai --url https://example.c
 
 读取现成配置中的客户端 API key，OAuth 凭证继续由外部服务管理。默认显示已配置的 Grok 4.5 / 4.7、Gemini 3.8 Flash、Opus 4.6 Thinking；可用 `--proxy-models` 限定。自动同步只增加已启用 Grok、Gemini Flash、Opus 系列的新版本，保留手动隐藏。
 
-需要 DeepSeek 时先运行 `python3 patch.py setup-key`，构建加入 `--with-deepseek`；不使用时无需设置。
-
+只使用 DeepSeek 时先运行 `python3 patch.py setup-key`，构建加入 `--with-deepseek`；不使用时无需设置。
 
 
 ## 构建、验证、安装
 
-macOS 示例，使用新的空输出目录：
+仅 DeepSeek：先运行 `python3 patch.py setup-key`，再使用 `python3 patch.py build --app /Applications/ChatGPT.app --with-deepseek --output /absolute/path/build --verify`。已有接口示例如下。
 
+macOS 示例，使用新的空输出目录：
 
 ```sh
 python3 patch.py build --app /Applications/ChatGPT.app \
@@ -122,7 +134,7 @@ python3 patch.py settings
 拖近屏幕边缘会显示淡蓝色落点，松手后收成一颗朝向边缘的小水滴。无待更新时为白色，有更新时为淡红色。鼠标移开再靠近时鲸鱼探出，离开后快速潜回；拖离边缘后保持普通悬浮。设置卡片打开时保持展开，填写内容不会被自动收走。选择“减少动效”可直接切换状态。
 
 - 模型：显示与隐藏、最大/服务/实际窗口、上下文和压缩阈值、恢复默认。
-- 连接：检测现成接口、勾选型号、管理凭证引用；扩展版可单独启停 DeepSeek。
+- 连接：检测现成接口、勾选型号、管理凭证引用；可单独启停 DeepSeek。
 - 更新：检查与重试补丁更新、单独同步模型、进度、开始更新及完成后启动 Codex。
 - 工具：图片工具、模型能力比较、旧历史恢复进度与取消。
 - 诊断：版本和运行状态、连接检查、复制脱敏报告。
@@ -147,7 +159,7 @@ python3 patch.py settings
 
 点击“开始更新”后，准备和兼容性校验通过才正常关闭 Codex；安装时提示暂勿启动。完成后更新按钮恢复正常，页面提供“启动 Codex”，由用户决定何时打开。失败可在“维护与恢复”重试。官方 Codex 客户端仍由官方更新机制维护。
 
-有实际工作数量的阶段显示计数，无法预估时使用活动进度条。相同版本不会反复呼出小窗；旧版首次升级在新版组件下载后开始使用整合后的界面。DS 与扩展版继续独立更新。
+有实际工作数量的阶段显示计数，无法预估时使用活动进度条。相同版本不会反复呼出小窗；旧版首次升级在新版组件下载后开始使用整合后的界面。后续版本使用统一更新源；旧通道仅用于兼容迁移。
 
 ## 更新与偏好
 
@@ -159,7 +171,7 @@ python3 monitor.py model-options --model MODEL_ID --hide
 python3 monitor.py model-options --model MODEL_ID --reset-context
 ```
 
-监测默认启用代码更新与模型同步，可在启用时分别用 `--no-code-updates` / `--no-model-sync` 关闭。正在使用 Codex 时等待退出后安装。更新包优先一次下载完整源码，再逐文件校验；旧客户端下载方式仍兼容。检查版本通道、不可变提交、文件摘要及隔离测试，DS 与扩展不会交叉覆盖。用户主动检查会排队，不被正在运行的检查丢弃。过期清理只处理本版本拥有、未被安装或恢复链引用的缓存，保留最近回退版本。
+监测默认启用代码更新与模型同步，可在启用时分别用 `--no-code-updates` / `--no-model-sync` 关闭。正在使用 Codex 时等待退出后安装。更新包优先一次下载完整源码，再逐文件校验；旧客户端下载方式仍兼容。检查版本通道、不可变提交、文件摘要及隔离测试，已知旧安装标识仅用于服务归属和回退，未知安装身份继续拒绝。用户主动检查会排队，不被正在运行的检查丢弃。过期清理只处理本版本拥有、未被安装或恢复链引用的缓存，保留最近回退版本。
 
 ```sh
 python3 patch.py status /absolute/path/build
@@ -167,6 +179,22 @@ python3 monitor.py disable
 python3 patch.py recover /absolute/path/build  # 恢复中断的安装
 python3 patch.py restore /absolute/path/build  # 撤销本适配层，恢复先前配置
 ```
+
+### 卸载并恢复原生 Codex
+
+先保存工作并正常完全退出 Codex。可在鲸鱼 **更新 → 安装与恢复 → 卸载并恢复原生 Codex** 中操作，也可在源码目录执行：
+
+```sh
+# macOS；Windows 将 python3 换为 python
+python3 patch.py uninstall --dry-run  # 只查看识别到的安装，不修改任何内容
+python3 patch.py uninstall
+```
+
+不需要填写 build 路径。命令优先读取本补丁的安装记录，纯手动安装可从当前受管模型目录识别。自定义目录可加 `--state-dir /path/to/monitor`；记录缺失时可用 `--build /path/to/original-build` 指定保留的构建。目标不明确或已被其他管理器接管时会停止，保持现有配置。
+
+卸载停用本补丁的监测和适配服务，移除未被改动的鲸鱼入口及本补丁登记的图片工具，恢复安装前的受管配置。聊天、登录、凭据和恢复备份保留；卸载前另存一份配置。不要删除整个 Codex 配置目录。操作中断后可重新执行同一卸载命令，沿已有事务继续恢复。
+
+卸载后不再提供外部模型兼容。旧外部模型会话记录仍保留；如原生 GPT 无法续接其专有历史，可在新 GPT 对话中使用可读任务摘要。
 
 恢复命令保留官方应用；旧补丁迁移前已有的外部提供方配置仍按原记录恢复。Mac 不重置钥匙串或系统隐私权限；首次从旧本地签名切回官方身份时，系统可能要求确认相应权限。日常更新不再重新签名。
 
@@ -190,4 +218,4 @@ Dot 使用官方客户端自己的云端长连接。若反复重连，先检查�
 - 实现代码：[`src/`](src/)；内部测试和维护脚本位于 `src/tests/`、`src/scripts/`。
 - 技术说明：[`docs/`](docs/)；参与开发见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-自动更新包保留旧版所需的文件路径，由整理后的源码生成。目录调整不增加常驻服务，也不影响两个版本的独立更新。
+自动更新包保留旧版所需的文件路径，由整理后的源码生成。目录调整不增加常驻服务；后续只维护统一更新源。

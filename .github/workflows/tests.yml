@@ -11,7 +11,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-2022]
         python-version: ['3.11', '3.13']
-        edition: [ds, proxy]
+        edition: [unified]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -37,7 +37,7 @@ jobs:
           path = Path(os.environ['ADAPTER_SOURCE_ROOT']) / 'edition.json'
           value = json.loads(path.read_text())
           value['edition'] = os.environ['CODEX_TEST_EDITION']
-          value['branch'] = {'ds': 'main', 'proxy': 'codex/existing-proxy-models'}[value['edition']]
+          value['branch'] = {'ds': 'main', 'proxy': 'codex/existing-proxy-models', 'unified':'main'}[value['edition']]
           path.write_text(json.dumps(value) + '\n')
       - run: python -m unittest discover -s tests -v
         working-directory: ${{ env.ADAPTER_SOURCE_ROOT }}
@@ -62,7 +62,7 @@ jobs:
     runs-on: macos-15-intel
     strategy:
       matrix:
-        edition: [ds, proxy]
+        edition: [unified]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -88,7 +88,7 @@ jobs:
           path = Path(os.environ['ADAPTER_SOURCE_ROOT']) / 'edition.json'
           value = json.loads(path.read_text())
           value['edition'] = os.environ['CODEX_TEST_EDITION']
-          value['branch'] = {'ds': 'main', 'proxy': 'codex/existing-proxy-models'}[value['edition']]
+          value['branch'] = {'ds': 'main', 'proxy': 'codex/existing-proxy-models', 'unified':'main'}[value['edition']]
           path.write_text(json.dumps(value) + '\n')
       - run: python -m unittest discover -s tests -v
         working-directory: ${{ env.ADAPTER_SOURCE_ROOT }}

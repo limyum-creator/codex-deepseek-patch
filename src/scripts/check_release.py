@@ -32,6 +32,7 @@ ALLOWED = {
 }
 files = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0")
 files = [name for name in files if name]
+if 'unified-update.json' in files:ALLOWED.add('unified-update.json')
 if SOURCE != ROOT:
     ALLOWED = {("src/" + name if name.startswith(("scripts/", "tests/")) or "/" not in name and (Path(name).suffix in (".py", ".js", ".ps1", ".svg") or name == "edition.json") else name) for name in ALLOWED} | {"patch.py", "monitor.py"}
 if (set(files) | {"update.json"}) != ALLOWED:

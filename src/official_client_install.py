@@ -30,7 +30,7 @@ from official_client_update import verify_official
 
 class AdapterService:
     def __init__(self, edition, directory):
-        p.require(edition in ('ds', 'proxy'), 'Unknown adapter service edition')
+        p.require(edition in ('ds', 'proxy', 'unified'), 'Unknown adapter service edition')
         self.edition, self.directory = edition, Path(directory)
         self.label = 'com.limyum.codex-model-adapter.' + edition
         self.plist = Path.home() / 'Library/LaunchAgents' / (self.label + '.plist')
@@ -171,7 +171,7 @@ def validate_build(directory, manifest):
     directory = Path(directory).resolve()
     p.require(manifest.get('architecture') == ARCHITECTURE and manifest.get('status') in ('prepared','prepared_idle'),
               'A prepared native-client build is required')
-    p.require(manifest.get('edition') == p.EDITION, 'Native build belongs to another edition')
+    p.require(p.runtime_accepts(p.EDITION, manifest.get('edition')), 'Native build belongs to another edition')
     p.require(manifest.get('native_probe') == 'passed', 'Run the native adapter regression before installation')
     checks = {'desktop-models.json':manifest['catalog_sha256'], 'adapter-profile.json':manifest['profile_sha256'],
               'host-settings.json':manifest['host_settings_sha256'],

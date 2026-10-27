@@ -392,6 +392,11 @@ class Fixture(ToolStub):
             ws.close()
 
     def record(self, body, raw, transport):
+        if body.get('model')==GPT:
+            from reasoning_origin import MESSAGE_PREFIX, LEGACY_MESSAGE_ID
+            patch.require(not any(isinstance(i,dict) and i.get('type')=='message' and isinstance(i.get('id'),str)
+                and (i['id'].startswith(MESSAGE_PREFIX) or LEGACY_MESSAGE_ID.fullmatch(i['id'])) for i in body.get('input',[])),
+                'Official endpoint received a foreign persisted message ID')
         self.server.wire.append({'model': body.get('model'), 'transport': transport, 'path': self.path,
             'history_summary': str(body.get('instructions', '')).startswith(('Create a factual handoff', 'Compact the ongoing task')),
             'request_bytes': len(raw), 'effort': body.get('reasoning', {}).get('effort'),
@@ -614,7 +619,7 @@ def require_tool_success(events, kind, marker=None):
 
 def run(app, reportdir, edition, *, services=False, progress=None):
     app, reportdir = Path(app), Path(reportdir)
-    patch.require(edition in ('ds', 'proxy'), 'Unknown edition')
+    patch.require(edition in ('ds', 'proxy', 'unified'), 'Unknown edition')
     reportdir.mkdir(parents=True, exist_ok=True)
     report = {'status': 'failed', 'edition': edition, 'external_inference_turns': 0,
               'real_credentials_used': False, 'provider': PROVIDER, 'mcp_tools': 160, 'checks': {}}
@@ -622,9 +627,9 @@ def run(app, reportdir, edition, *, services=False, progress=None):
         class Checks(dict):
             def __setitem__(self,key,value):
                 super().__setitem__(key,value)
-                progress(len(self),(20 if edition=='proxy' else 16)+(9 if services else 0))
+                progress(len(self),(20 if edition!='ds' else 16)+(9 if services else 0))
         report['checks']=Checks()
-        progress(0,(20 if edition=='proxy' else 16)+(9 if services else 0))
+        progress(0,(20 if edition!='ds' else 16)+(9 if services else 0))
     report.update(runner_runtime=Path(sys.executable).name, mcp_runtime=Path(mcp_runtime()).name)
     process, adapter, upstream = None, None, None
     started_servers = []
@@ -658,7 +663,7 @@ def run(app, reportdir, edition, *, services=False, progress=None):
             native = json.loads(raw)
             template = patch.catalog_template(native)
             models = [(GPT, 272000), (DS, 1048576)]
-            if edition == 'proxy':
+            if edition != 'ds':
                 models += [('grok-4.7', 500000), ('gemini-3.8-flash-high', 1048576), ('local-probe', 256000), ('messages-probe', 1000000)]
             entries = []
             for slug, window in models:
@@ -789,6 +794,7 @@ def run(app, reportdir, edition, *, services=False, progress=None):
                     turn(model, 'same-thread switch')
                 turn(GPT, 'return to GPT')
                 report['checks']['same_thread_model_switching'] = 'passed'
+                report['checks']['native_cross_provider_message_ids'] = 'passed'
                 target = DS if edition == 'ds' else 'grok-4.7'
                 turn(target, 'enter compaction model')
                 turn(target, 'reasoning switch to low', 'low')
@@ -823,7 +829,7 @@ def run(app, reportdir, edition, *, services=False, progress=None):
                 patch.require((work / 'CUSTOM_TOOL_OK.txt').read_text(encoding='utf-8').strip() == 'CUSTOM_TOOL_OK', 'Custom apply_patch did not execute')
                 report['custom_execution'] = {'status':custom['status'], 'file_content_exact':True}
                 report['checks']['native_custom_tool_execution'] = 'passed'
-                if edition == 'proxy':
+                if edition != 'ds':
                     upstream.tool_mode, upstream.phase = True, 'search'
                     turn('local-probe', 'flattened namespace lazy tool execution')
                     patch.require(not any(v['error'] for v in upstream.records), 'Local flattened namespace tool execution failed')
@@ -970,7 +976,7 @@ if __name__ == '__main__':
         parser = argparse.ArgumentParser()
         parser.add_argument('--app', type=Path, required=True)
         parser.add_argument('--reportdir', type=Path, required=True)
-        parser.add_argument('--edition', choices=['ds', 'proxy'], required=True)
+        parser.add_argument('--edition', choices=['ds', 'proxy', 'unified'], required=True)
         parser.add_argument('--services', action='store_true',
                             help='Required release gate: native image tools with synthetic TLS/auth')
         args = parser.parse_args()
