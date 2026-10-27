@@ -1,4 +1,4 @@
-<img src="src/brand.svg" width="88" alt="Codex 模型补丁：代码光标与蓝鲸">
+<img src="brand.svg" width="88" alt="Codex 模型补丁：代码光标与蓝鲸">
 
 # Codex 模型补丁
 
