@@ -1,4 +1,4 @@
-<img src="src/brand.svg" width="88" alt="Codex Model Patch: a terminal prompt inside a blue whale">
+<img src="brand.svg" width="88" alt="Codex Model Patch: a terminal prompt inside a blue whale">
 
 # Codex Model Patch
 
