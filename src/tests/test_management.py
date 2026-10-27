@@ -648,6 +648,20 @@ $probe.Start()
 
 
 class FirstSetupTests(unittest.TestCase):
+    def test_unified_setup_switch_requires_new_detection_and_never_reuses_another_key(self):
+        with tempfile.TemporaryDirectory() as temp,patch.object(ui.p,'EDITION','unified'):
+            root=Path(temp);setup=root/'setup';setup.mkdir()
+            ui.monitor.atomic_json(setup/'draft.json',{'edition':'unified','phase':'draft','connection_mode':'deepseek',
+                'app':str(root/'app'),'home':str(root/'home'),'config_digest':'previously-checked','key_service':'previous-key'})
+            (setup/'credential.key').write_text('private-fixture-key')
+            result=ui.setup_dispatch(root,{'intent':'setup_compatible'},ui.setup_revision(root))
+            saved=ui.setup_read(root)
+            self.assertEqual(saved['connection_mode'],'compatible')
+            self.assertNotIn('config_digest',saved);self.assertNotIn('key_service',saved)
+            self.assertFalse((setup/'credential.key').exists())
+            self.assertEqual(len(list(setup.glob('credential-before-switch-*.key'))),1)
+            self.assertNotIn('setup_prepare',[b['intent'] for b in result['buttons']])
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.state=self.root/'state';self.home=self.root/'home';self.app=self.root/'app'

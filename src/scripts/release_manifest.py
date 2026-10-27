@@ -45,6 +45,7 @@ REQUIRED_REGRESSIONS = frozenset((
     'test_unified_old_ds_can_disable_deepseek_without_losing_other_preferences',
     'test_uninstall_discovers_latest_owned_build_and_preserves_backups',
     'test_uninstall_rejects_another_manager_without_changes',
+    'test_unified_setup_switch_requires_new_detection_and_never_reuses_another_key',
     'test_unified_launcher_renames_only_verified_legacy_entry',
     'test_native_composer_quota_button_before_inference',
     'test_composer_quota_model_switch_keeps_gpt_and_other_submit_guards',

@@ -122,7 +122,8 @@ def setup_dispatch(directory, payload, expected=None, cancelled=None):
             key=root/'credential.key'
             if key.exists() and mode!=draft.get('connection_mode','deepseek' if setup_deepseek(draft) else 'compatible'):
                 key.replace(root/('credential-before-switch-'+uuid.uuid4().hex+'.key'))
-            draft.update(edition=p.EDITION,phase='draft',connection_mode=mode)
+            draft={**{k:draft[k] for k in ('app','home','maintenance') if k in draft},
+                   'edition':p.EDITION,'phase':'draft','connection_mode':mode}
             monitor.atomic_json(root/'draft.json',draft)
         return setup_view(directory)
     require(intent in ('setup_save','setup_prepare','setup_install'),'请先完成首次设置。','not_installed')

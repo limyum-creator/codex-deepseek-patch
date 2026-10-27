@@ -126,7 +126,7 @@ def first_setup_view(directory, notice=''):
     buttons=[hub_button('保存并检测','setup_save')]
     if phase=='draft':buttons.append(hub_button('切换到兼容接口 / 本地模型' if setup_deepseek(draft) else '切换到 DeepSeek 快速接入',
         'setup_compatible' if setup_deepseek(draft) else 'setup_deepseek'))
-    if phase=='draft' and draft:buttons.append(hub_button('准备并验证','setup_prepare',style='primary'))
+    if phase=='draft' and draft.get('config_digest'):buttons.append(hub_button('准备并验证','setup_prepare',style='primary'))
     if phase=='prepared':
         rows.append({'type':'note','text':'准备和隔离验证通过。请先正常退出 Codex，再点击安装。'})
         buttons.append(hub_button('安装','setup_install',style='primary'))
