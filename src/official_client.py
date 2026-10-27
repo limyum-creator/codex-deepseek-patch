@@ -38,7 +38,7 @@ def free_port():
         return listener.getsockname()[1]
 
 
-def compression_node(app):
+def compression_node(app, node=None):
     """Resolve the vendor's codec; never install another runtime or change flags."""
     try:
         from compression import zstd
@@ -46,8 +46,11 @@ def compression_node(app):
     except ImportError:
         pass
     app = Path(app)
-    node = app / ('Contents/Resources/cua_node/bin/node' if sys.platform == 'darwin'
-                  else 'resources/cua_node/bin/node.exe')
+    if sys.platform == 'linux':
+        node = Path(node or shutil.which('node') or '/missing-node').resolve()
+    else:
+        node = app / ('Contents/Resources/cua_node/bin/node' if sys.platform == 'darwin'
+                      else 'resources/cua_node/bin/node.exe')
     p.require(node.is_file(), 'The official app request compression runtime is unavailable')
     from inference_transport import zstd_body
     sample = b'native-request-codec\x00'
@@ -62,7 +65,7 @@ def inspect(app):
     publisher = verify_official(app)
     layout = p.app_layout(app)
     return {"compatible":True, "architecture":ARCHITECTURE, "publisher":publisher,
-            "source_asar":p.file_sha(layout["asar"]),
+            "source_asar":p.file_sha(layout.get("source_artifact", layout.get("asar"))),
             "app_version":layout["version"], "app_build":layout["build"]}
 
 
@@ -108,7 +111,8 @@ def adapter_routes(manifest, routes, platform=None):
 
 
 def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=None,
-          install_target=None, update_metadata=None, model_preferences=None, initial=None):
+          install_target=None, update_metadata=None, model_preferences=None, initial=None,
+          compression_runtime=None):
     """Create a private, reviewable build; require explicit validation to install."""
     from official_client_update import verify_official
     from official_client_host import windowless_python
@@ -119,7 +123,8 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
               and output != codex_home, "Native adapter output overlaps production state")
     publisher = verify_official(app)
     source = p.app_layout(app)
-    source_hash = p.file_sha(source["asar"])
+    source_artifact = source.get("source_artifact", source.get("asar"))
+    source_hash = p.file_sha(source_artifact)
     p.require(baseline is not None or isinstance(initial, dict), "Initial model configuration is required")
     prior = json.loads((baseline / "manifest.json").read_text(encoding="utf-8")) if baseline else initial['manifest']
     edition = edition or prior.get("edition", p.EDITION)
@@ -140,13 +145,13 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
                   "Native model snapshot identity mismatch")
         catalog, routes = model_snapshot["catalog"], model_snapshot["routes"]
     else:
-        catalog = (json.loads((baseline / "desktop-models.json").read_text(encoding="utf-8"))
-                   if baseline else initial['catalog'])
-        routes = prior.get("model_routes", {})
+        catalog = (initial['catalog'] if initial else
+                   json.loads((baseline / "desktop-models.json").read_text(encoding="utf-8")))
+        routes = (initial['manifest'] if initial else prior).get("model_routes", {})
     # Only an explicit preferences source enables legacy global-limit migration.
     # Public updaters supply their existing monitor preference file, including
     # an explicit empty mapping when the user has no reductions.
-    if not previous and model_preferences is not None:
+    if model_preferences is not None:
         if isinstance(model_preferences, (str, Path)):
             model_preferences = json.loads(Path(model_preferences).read_text(encoding="utf-8"))
         from model_sync import validate_preferences
@@ -156,6 +161,10 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
         p.require(all(route["provider"] == p.PROVIDER for route in routes.values()),
                   "The DS edition cannot import extension routes")
     effective = copy.deepcopy(prior)
+    if initial and baseline:
+        for key in ('locals', 'model_specifications', 'deepseek_enabled', 'proxy'):
+            if key in initial['manifest']:
+                effective[key] = copy.deepcopy(initial['manifest'][key])
     if model_snapshot:
         effective["model_specifications"] = model_snapshot.get("specs",effective.get("model_specifications",{}))
         effective["locals"] = model_snapshot.get("locals", effective.get("locals", []))
@@ -181,7 +190,7 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
     identity = hashlib.sha256(json.dumps([edition, catalog, routes, mapped, code_identity],
                                          sort_keys=True).encode()).hexdigest()
     profile = {"format":1, "edition":edition, "identity":identity, "token":token, "port":port,
-               "compression_node":compression_node(app),
+               "compression_node":compression_node(app, compression_runtime),
                "gpt":{"chatgpt_base_url":"https://chatgpt.com/backend-api/codex",
                       "api_base_url":"https://api.openai.com/v1"}, "routes":mapped,
                "official_models":[row['slug'] for row in catalog['models'] if row['slug'] not in routes],
@@ -199,7 +208,7 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
     prepared, ownership = prepare_config(before, output / "desktop-models.json", endpoint(port, token),
                                           mode="builtin", previous=previous)
     from official_client_host import prepare as prepare_composer
-    composer = prepare_composer(app, sorted(mapped)) if mapped else None
+    composer = prepare_composer(app, sorted(mapped)) if mapped and sys.platform != 'linux' else None
     output.mkdir(parents=True, mode=0o700)
     for name in ADAPTER_FILES:
         shutil.copy2(p.ROOT / name, output / name)
@@ -230,13 +239,21 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
                 "deepseek_enabled":effective.get("deepseek_enabled", edition == "ds"),
                 "locals":effective.get("locals", []), "probe_required":True,
                 "model_specifications":(model_snapshot or {}).get("specs",effective.get("model_specifications",{}))}
+    if sys.platform == 'linux':
+        manifest.update(client_kind='cli', source_artifact=str(source_artifact))
+    if (p.ROOT.parent / '.git').exists() and shutil.which('git'):
+        revision = subprocess.run(['git', '-C', str(p.ROOT.parent), 'rev-parse', 'HEAD'],
+                                  capture_output=True, text=True, check=True)
+        dirty = subprocess.run(['git', '-C', str(p.ROOT.parent), 'status', '--porcelain'],
+                               capture_output=True, text=True, check=True)
+        manifest.update(source_revision=revision.stdout.strip(), source_dirty=bool(dirty.stdout))
     if effective.get("proxy"):
         manifest["proxy"] = effective["proxy"]
     if update_metadata:
         manifest["update"] = update_metadata
     if initial is not None:
         manifest['initial_manifest'] = prior
-    p.require(p.file_sha(source["asar"]) == source_hash, "Official app changed during native staging")
+    p.require(p.file_sha(source_artifact) == source_hash, "Official app changed during native staging")
     p.save_json(output / "manifest.json", manifest)
     return manifest
 
@@ -303,15 +320,19 @@ def build(args):
     if app is None and sys.platform == 'win32':
         from windows_support import discover_app
         app = discover_app()
+    elif app is None and sys.platform == 'linux':
+        from linux_support import discover_app
+        app = discover_app()
     app = Path(app).resolve()
     baseline = getattr(args, 'baseline', None)
-    initial = None if baseline else initial_models(app, args)
+    initial = initial_models(app, args) if not baseline or getattr(args, 'connections', None) else None
     snapshot = getattr(args, 'model_snapshot', None)
     if isinstance(snapshot, Path):
         snapshot = json.loads(snapshot.read_text(encoding='utf-8'))
     result = stage(app=app, codex_home=args.codex_home, output=args.output, baseline=baseline,
                    edition=p.EDITION, model_snapshot=snapshot, initial=initial,
                    install_target=getattr(args, 'install_target', None),
+                   compression_runtime=getattr(args, 'compression_node', None),
                    model_preferences=getattr(args, 'model_preferences', None))
     print('Prepared native model adapter:', args.output, flush=True)
     return result

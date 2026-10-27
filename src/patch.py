@@ -39,7 +39,7 @@ KEYCHAIN_SERVICE = "Codex DeepSeek API Key"
 ROOT = Path(__file__).resolve().parent
 SERVICE_RUNTIME_FILES = ("patch.py", "backend.py", "monitor.py", "compatibility.py", "route.js", "proxy_support.py", "local_support.py", "local_bridge.py", "responses_compat.py",
                          "model_sync.py", "updater.py", "update_worker.py", "edition.json", "macos_signing.py", "cpa_images.py",
-                         "windows_support.py", "windows_install.py", "windows_update_ui.py", "windows_update_ui.js", "scripts/__init__.py",
+                         "windows_support.py", "linux_support.py", "windows_install.py", "windows_update_ui.py", "windows_update_ui.js", "scripts/__init__.py",
                          "scripts/test_boot.py", "scripts/test_offline.py", "scripts/test_context.py", "scripts/test_reasoning.py", "scripts/test_switching.py", "scripts/test_tools.py", "scripts/route_driver.cjs", "scripts/check_compatibility.cjs")
 SERVICE_RUNTIME_FILES += ("official_client.py", "official_client_config.py", "official_client_host.py", "official_client_install.py",
                           "official_client_migration.py", "official_client_update.py", "inference_adapter.py", "inference_transport.py",
@@ -92,6 +92,9 @@ def mac_only():
 
 def app_layout(app):
     app = Path(app).resolve()
+    if sys.platform == "linux":
+        from linux_support import inspect_app
+        return inspect_app(app)
     if sys.platform == "win32":
         from windows_support import inspect_app
         return inspect_app(app)
@@ -592,6 +595,8 @@ def main():
         default_app = Path("/Applications/Codex.app")
     if sys.platform == "win32":
         default_app = None
+    elif sys.platform == "linux":
+        default_app = None
     p.add_argument("--app", type=Path, default=default_app)
     p.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))))
     p.add_argument("--output", type=Path, required=True)
@@ -606,6 +611,7 @@ def main():
     p.add_argument("--model-snapshot", type=Path, help="Validated discovery snapshot for reproducible automatic updates")
     p.add_argument("--model-preferences", type=Path, help="Explicit per-model reductions and hidden models")
     p.add_argument("--connections", type=Path, help="Connections saved by the connect command")
+    p.add_argument("--compression-node", type=Path, help="Existing Linux Node runtime with zstd support (Python <3.14)")
     p.add_argument("--progress-file",type=Path,help=argparse.SUPPRESS)
     p.add_argument("--verify",action="store_true",help="Run all isolated installation checks after building")
     ds=p.add_mutually_exclusive_group()

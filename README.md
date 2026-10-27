@@ -86,6 +86,8 @@ python3 patch.py connect --name compatible --kind openai --url https://example.c
 
 ## 构建、验证、安装
 
+本 fork 的 `local/linux-glm` 分支支持 Linux npm Codex CLI 的隔离构建，见 [Linux 构建说明](docs/LINUX.md)。
+
 macOS 示例，使用新的空输出目录：
 
 

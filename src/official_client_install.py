@@ -206,11 +206,12 @@ def validate_build(directory, manifest):
               'Native service, catalog configuration and profile identity disagree')
     source = Path(manifest['source_target'])
     verify_official(source)
-    p.require(p.file_sha(p.app_layout(source)['asar']) == manifest['original_asar'],
+    layout = p.app_layout(source)
+    p.require(p.file_sha(layout.get('source_artifact', layout.get('asar'))) == manifest['original_asar'],
               'The original app changed after native validation')
     if 'composer_compat' in manifest:
         plan=manifest['composer_compat']
-        p.require((plan is None and not profile['routes']) or
+        p.require((plan is None and (not profile['routes'] or manifest.get('client_kind') == 'cli')) or
                   isinstance(plan,dict) and plan.get('models')==sorted(profile['routes']),
                   'Composer compatibility and independent model routes disagree')
         if plan is not None:

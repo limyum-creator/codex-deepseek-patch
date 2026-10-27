@@ -26,6 +26,10 @@ def read_manifest(directory):
 def verify_official(app):
     """Validate vendor signatures without old patch/integrity byte anchors."""
     app = Path(app).resolve()
+    if sys.platform == "linux":
+        layout = p.app_layout(app)
+        return {"identity": "npm-package-metadata", "package": "@openai/codex",
+                "version": layout['version'], "cli_sha256": p.file_sha(layout['cli'])}
     if sys.platform == "win32":
         from windows_support import verify_publisher
         return {"publisher": verify_publisher(app)}
