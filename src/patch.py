@@ -24,7 +24,12 @@ from windows_support import background_options
 
 _RELEASE = json.loads((Path(__file__).resolve().parent / "edition.json").read_text(encoding="utf-8"))
 VERSION, EDITION = _RELEASE['version'], _RELEASE['edition']
-if EDITION not in ('ds', 'proxy'):
+INSTALL_AFFINITIES = ('ds', 'proxy', 'unified')
+
+def runtime_accepts(runtime, installation):
+    return runtime == installation or runtime == 'unified' and installation in INSTALL_AFFINITIES
+
+if EDITION not in INSTALL_AFFINITIES:
     raise ValueError('Unknown patch edition')
 ARCHITECTURE = "official-client-v1"
 APP_VERSION = "26.1013.40934"
@@ -510,6 +515,45 @@ def install(args):
     print("Installed. Open the app, create a new local chat, and select DeepSeek 4.1 Flash.")
 
 
+def uninstall(args):
+    """Discover our recorded installation; reuse the resumable restore transaction."""
+    from types import SimpleNamespace
+    import monitor
+    from management import find_directory
+    state=find_directory(getattr(args,'state_dir',None))
+    settings=monitor.load_json(state/'settings.json',{})
+    saved=monitor.load_json(state/'state.json',{})
+    home=Path(settings.get('codex_home') or os.environ.get('CODEX_HOME',Path.home()/'.codex')).resolve()
+    config=home/'config.toml';current=read_config(config)
+    requested=getattr(args,'build',None)
+    baseline=requested or saved.get('installed',{}).get('baseline') or settings.get('baseline')
+    catalog=tomllib.loads(current).get('model_catalog_json')
+    if not baseline and isinstance(catalog,str) and Path(catalog).is_absolute():
+        baseline=Path(catalog).parent
+    require(baseline is not None,'No recorded patch installation found. Keep the original build and use --build if needed.')
+    directory,manifest=load_build(Path(baseline))
+    require(manifest.get('architecture')==ARCHITECTURE and runtime_accepts(EDITION,manifest.get('edition'))
+            and Path(manifest['codex_home']).resolve()==home,'This build does not belong to the selected installation')
+    journal=monitor.load_json(directory/'native-uninstall-transaction.json',{})
+    resumed=(journal.get('directory')==str(directory) and journal.get('home')==str(home)
+             and journal.get('target')==manifest['target'])
+    require(manifest.get('status')=='restored' or resumed or
+            isinstance(catalog,str) and Path(catalog).resolve()==directory/'desktop-models.json',
+            'Codex is using another configuration. No changes made; verify the original installation record.')
+    plan={'status':'ready','build':str(directory),'state_dir':str(state),'preserves':['chat history','login','credentials','recovery backups']}
+    if getattr(args,'dry_run',False):return plan
+    require_stopped(Path(manifest['target']),read_only_source=sys.platform=='win32')
+    backup=directory/'config-before-uninstall.toml'
+    if manifest.get('status')!='restored' and not backup.exists():atomic_text(backup,current)
+    result=restore(SimpleNamespace(directory=directory,state_dir=state,
+        settings_revision=getattr(args,'settings_revision',None)))
+    from cpa_images import MANAGED_MARKER, configure
+    if MANAGED_MARKER in read_config(config):
+        configure(SimpleNamespace(codex_home=home,disable=True))
+    return {**plan,**(result or {}),'status':'restored','configuration_backup':str(backup) if backup.exists() else None,
+            'message':'模型补丁已卸载，受管配置已恢复；聊天、登录及恢复备份已保留。可正常打开官方 Codex。'}
+
+
 def restore(args):
     mac_only()
     directory, manifest = load_build(args.directory)
@@ -517,7 +561,8 @@ def restore(args):
         import monitor
         state = Path(getattr(args, 'state_dir', None) or monitor.default_directory())
         settings = monitor.load_json(state/'settings.json', {})
-        if settings.get('edition') == manifest['edition'] and settings.get('baseline') and Path(settings['baseline']).resolve() == directory:
+        installed=monitor.load_json(state/'state.json',{}).get('installed',{}).get('baseline')
+        if settings.get('edition') == manifest['edition'] and any(value and Path(value).resolve()==directory for value in (settings.get('baseline'),installed)):
             with monitor.state_lock(state) as locked:
                 require(locked, 'The update monitor is busy; retry restoration after its current check')
                 if getattr(args,'settings_revision',None) is not None:
@@ -628,6 +673,11 @@ def main():
     p=subs.add_parser('recover',help='Recover an interrupted native adapter activation')
     p.add_argument('directory',type=Path)
     p.set_defaults(func=lambda args: __import__('official_client_install').recover(args.directory))
+    p=subs.add_parser('uninstall',help='Uninstall the recorded patch and restore native configuration; keep chats and backups')
+    p.add_argument('--state-dir',type=Path)
+    p.add_argument('--build',type=Path,help='Explicit original build when automatic discovery is unavailable')
+    p.add_argument('--dry-run',action='store_true',help='Show the installation to restore without changing it')
+    p.set_defaults(func=uninstall)
     p=subs.add_parser('settings',help='Open the integrated native model settings window')
     p.add_argument('--state-dir',type=Path)
     p.set_defaults(func=lambda args: __import__('management').main(['show'] +
@@ -671,6 +721,7 @@ def main():
             progress=__import__('update_worker').SetupProgress(args.progress_file)
             progress.publish('building')
         result = args.func(args)
+        if args.action=='uninstall':print(json.dumps(result,ensure_ascii=False,indent=2))
         if args.action in ('settings','diagnose'):
             return result
         if args.action=='build' and args.verify:

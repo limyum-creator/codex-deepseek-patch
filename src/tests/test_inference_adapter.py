@@ -664,7 +664,7 @@ class AdapterTests(unittest.TestCase):
         delta = [{'role': 'user', 'content': 'continue'}]
         ws.send(encoded({**first, 'previous_response_id': complete['id'], 'input': delta}))
         self.receive_terminal(ws)
-        self.assertEqual(self.upstream.seen[-1][3]['input'], first['input'] + complete['output'] + delta)
+        self.assertEqual(self.upstream.seen[-1][3]['input'], first['input'] + __import__('reasoning_origin').resolve_request({'input':complete['output']},first['model'])[0]['input'] + delta)
         ws.send(encoded({**first, 'previous_response_id': 'unknown', 'input': delta}))
         self.assertEqual(self.receive_terminal(ws)[-1]['error']['code'], 'previous_response_not_found')
         ws.close()

@@ -10,7 +10,7 @@ Do not upload app bundles, complete extracted JavaScript, generated catalogs, us
 
 | 目录 | 用途与保留规则 |
 | --- | --- |
-| `.local/releases/` | 最新及上一版的 DS/扩展版发布包、候选清单、四组合验证记录、日志和校验值；每组保持可独立核验 |
+| `.local/releases/` | 最新及上一版的 DS/扩展版发布包、候选清单、两系统及旧版迁移验证记录、日志和校验值；每组保持可独立核验 |
 | `.local/backups/` | 修改前配置、最后可用的恢复材料、迁移记录和签名恢复材料；按日期与用途命名，记录原位置及 SHA256 |
 | `.local/records/` | 当前问题的最小复现、结果摘要、清理清单；已结束的历史调查压成一个归档，不保留重复工作目录 |
 | `.local/assets/` | 项目独有的品牌源素材、参考与宣传成品；不作为测试缓存删除 |
@@ -22,7 +22,7 @@ Do not upload app bundles, complete extracted JavaScript, generated catalogs, us
 清理时机与检查顺序：
 
 1. **每次测试或调查结束**：确认进程和句柄已退出，保存必要结果后删除临时应用副本、浏览器测试配置、解包的第三方代码、下载包和编译缓存。临时目录使用自动回收的上下文；需要显式路径时放入 `.local/tmp/`，Python 缓存可通过 `PYTHONPYCACHEPREFIX` 指向 `.local/cache/pycache/`。
-2. **一次发布完成后**：四组合验证、源码 CI、公开下载校验均通过，再清理候选重复目录及临时工作区。保留最新与上一组发布包及其完整验证记录，不因清缓存删除验证凭据或尚未结束的候选。
+2. **一次发布完成后**：两系统及旧版迁移验证、源码 CI、公开下载校验均通过，再清理候选重复目录及临时工作区。保留最新与上一组发布包及其完整验证记录，不因清缓存删除验证凭据或尚未结束的候选。
 3. **问题尚未解决时**：保留最小复现、故障版本、协议错误分类及必要日志。包含原始聊天、图片或凭据的临时载荷在取得脱敏结论后立即删除；普通临时日志保留 7 天，已解决问题的诊断日志最多保留 30 天，结论归档后删除大体积现场。
 4. **每周及目录超过 1 GB 时**：盘点 `.local/` 的占用、过期缓存与备份重复。先保护当前部署、正在安装/回滚的引用、未解决问题和唯一素材；再删除无引用的可再生成内容。容量阈值用于触发检查，不直接触发删除。
 5. **移除 Git 工作区时**：先核对 `git worktree list`、未提交改动和提交可达性；保留需要的提交引用后使用 `git worktree remove`。有改动的工作区先保存差异，禁止直接递归删除已注册工作区或执行无范围的 `git clean -fdx`。
@@ -30,20 +30,14 @@ Do not upload app bundles, complete extracted JavaScript, generated catalogs, us
 
 私有备份目录仅限当前用户访问；不要在公开文档、提交或发布包中加入真实凭据、用户绝对路径、完整应用或聊天。签名身份、唯一恢复材料及用户明确保留的内容不按缓存期限自动删除。规范本身不安装定时清理程序；清理在已授权的任务内执行并留记录。公开包继续遵守既有文件清单与 100 文件兼容预算，优先更新现有规范文档。
 
-## 每次修复的四组合核对 / Four-variant bug-fix review
+## 统一版与旧用户迁移验证
 
-每个 bug 都必须在同一次任务中核对以下四种组合，记录受影响、已修复并验证、或不受影响的具体原因：
+从 0.9.0 起只维护一个产品与版本，在 macOS、Windows 两个平台验证。每个共享 bug 同时检查两个系统；旧 DS 和扩展版作为升级来源场景保留，不再作为独立功能版本。
 
-| Platform | DS edition (`main`) | Extension (`codex/existing-proxy-models`) |
-| --- | --- | --- |
-| macOS | Required review | Required review |
-| Windows | Required review | Required review |
-
-- 同一原因涉及的代码在所有受影响组合同步修复；平台专属问题也要明确核对另一平台的相关路径。
-- 每条发布分支独立版本、更新序号和来源摘要，保持两版各自更新。
-- 对请求更新的机器核验实际安装版本、运行代码和保留的用户设置，分别记录已构建、已验证、已发布、已安装和已重启状态。
-- Every bug fix reviews all four combinations in the same task. Apply shared fixes to every affected combination and state the reason for unaffected cases.
-- Keep edition-specific releases and feeds independent. Record validation and the actual installation state on each requested machine separately from publication.
+- 统一更新源是 `main/unified-update.json`。两个旧 `update.json` 永久保留同一核心的一次性迁移包，后续无需复制功能发布。
+- 旧安装的服务标识、目录与 profile edition 是安装归属信息。统一运行时接受已知旧标识；旧 DS 与 proxy 相互冒用、未知身份或降级到旧运行时继续拒绝。
+- 保留用户密钥引用、连接、模型选择、隐藏项、上下文与压缩调小值、维护偏好和恢复链。相同版本且全部运行时文件相符的桥接包可直接沿用，避免重复安装。
+- 单元和事务测试覆盖两个旧来源、升级失败回退、统一后下一次更新，以及首次安装。系统验证使用隔离环境；发布和现用机器安装分别记录。
 
 ## Native integration changes
 
@@ -70,7 +64,7 @@ node tests/route.test.cjs  # retained legacy regression
 python3 patch.py build --app "/path/to/official/app" --connections "/path/to/connections.json" --output "/new/build/directory" --verify
 ```
 
-On Windows use `python` and Windows paths. Validate both DS/extension on Mac/Windows. Record unit fixtures, original CLI synthetic integration, real model calls, service tests and actual installation separately. Models without credentials receive synthetic protocol coverage, not a real-model success label.
+On Windows use `python` and Windows paths. Validate unified on Mac/Windows, including both legacy upgrade sources. Record unit fixtures, original CLI synthetic integration, real model calls, service tests and actual installation separately. Models without credentials receive synthetic protocol coverage, not a real-model success label.
 
 Live provider tests require user authorization and use minimal synthetic chats. Never publish app bundles, generated vendor catalogs, tokens, raw user history or private execution evidence. Real tests should use ephemeral authentication and avoid login refresh. Native verification does not require GUI boot or local signing tests; retain those only for legacy recovery changes.
 
@@ -78,25 +72,22 @@ Live provider tests require user authorization and use minimal synthetic chats. 
 
 Development code lives in `src/`. Keep the root command wrappers small; all internal imports remain within the source tree. Tests and build fixtures are source materials, not additional running services.
 
-Prepare both editions from one committed source revision, then validate those exact portable bytes on both platforms:
+Prepare the single product from one committed source revision, then validate its exact portable bytes on both platforms:
 
 ```sh
-python3 src/scripts/release_manifest.py --commit FULL_SOURCE_SHA --prepare-pair PRIVATE_CANDIDATE_DIR --ds-version DS_VERSION --proxy-version PROXY_VERSION
-python3 src/scripts/release_manifest.py --verify-candidate PRIVATE_CANDIDATE_DIR/candidate.json --edition ds --app OFFICIAL_APP --output PRIVATE_RECEIPTS_DIR
-python3 src/scripts/release_manifest.py --verify-candidate PRIVATE_CANDIDATE_DIR/candidate.json --edition proxy --app OFFICIAL_APP --output PRIVATE_RECEIPTS_DIR
+python3 src/scripts/release_manifest.py --commit FULL_SOURCE_SHA --prepare-unified PRIVATE_CANDIDATE_DIR --version VERSION
+python3 src/scripts/release_manifest.py --verify-candidate PRIVATE_CANDIDATE_DIR/candidate.json --edition unified --app OFFICIAL_APP --output PRIVATE_RECEIPTS_DIR
 ```
 
-Run the two verification commands on macOS and Windows. On Windows use ordinary-user `pythonw`, with redirected output and no console. The native image contract also needs OpenSSL on the validation host (Git for Windows includes it); this is not an installation/runtime dependency. Gather all four receipts, logs, and `coverage.json` files in one private directory. Each receipt binds the candidate, portable commit, shared-core digest and evidence hashes. Promotion rejects missing, skipped, or failed mandatory checks listed in [VALIDATION.md](docs/VALIDATION.md), including the real bundled CLI's image generation/edit calls against isolated services and the transport/update regressions. Record actual upstream calls separately from synthetic service coverage.
+Run verification on macOS and ordinary-user Windows `pythonw` without a console. Collect both receipts and their unit/native/prepared-build/coverage logs. Migration regressions cover both legacy affinities. The first unified candidate additionally binds both legacy bridge packages to the exact same shared-core digest; later candidates leave those immutable bridge feeds alone. Portable inventories retain historical paths and the 100-file limit for older updaters.
 
-For each reported regression, retain a reproducer covering its failing path before considering the fix complete. Update the mandatory coverage list when adding an entry point; a successful generic Responses request is not an image-tool, account, update-button, or native-window check.
-
-Push the candidate source branch for CI first; after it succeeds, publish both independent feeds and tags with one atomic operation:
+Push the source branch for CI. After source CI and both platform receipts pass:
 
 ```sh
 python3 src/scripts/release_manifest.py --promote PRIVATE_CANDIDATE_DIR/candidate.json --receipts PRIVATE_RECEIPTS_DIR --execute
 ```
 
-Candidate preparation uses isolated Git indexes without changing the checkout or published feed. Portable artifacts retain historical paths and the 100-file limit for existing updaters. The old `--distribution` command remains available for historical tooling; new paired releases use the gates above. Never point a feed at a local-only commit.
+Promotion atomically publishes the unified feed/tag and, on the first transition only, the compatibility tags/legacy feeds. Every required regression must pass; protocol mocks, native synthetic services and real-account acceptance remain separately identified. Live inference is not part of ordinary release validation.
 
 ### 更新事务与空闲安装
 
@@ -106,9 +97,9 @@ Candidate preparation uses isolated Git indexes without changing the checkout or
 
 安装事务必须在提交前验证新服务身份及更新运行时启动身份。故障恢复上一版运行时、服务和受管配置；恢复失败保留日志和备份，不显示成功。原版 Codex 的启动按钮是独立操作，确认目标主进程与服务就绪后才消耗点击；启动失败恢复按钮。关闭进程测试只使用临时目录中的替身，禁止对用户工作中的应用执行退出测试。
 
-完整单元、原生 UI 与故障注入测试在发布四组合门禁中执行；用户端下载仅做文件校验、全源码语法检查和轻量协议检查，随后用其原版 CLI 验证兼容性。下载检查不得重复启动整套 GUI/服务生命周期测试。
+完整单元、原生 UI 与故障注入测试在发布两系统及旧版迁移门禁中执行；用户端下载仅做文件校验、全源码语法检查和轻量协议检查，随后用其原版 CLI 验证兼容性。下载检查不得重复启动整套 GUI/服务生命周期测试。
 
-后台准备的新包使用 `prepared_idle` 状态：旧控制器只能识别 `prepared`，因此不得越过新空闲策略自行关闭应用。新安装器同时接受两种已校验状态，提交后统一为 `installed`。四组合必须验证这条首次升级路径。
+后台准备的新包使用 `prepared_idle` 状态：旧控制器只能识别 `prepared`，因此不得越过新空闲策略自行关闭应用。新安装器同时接受两种已校验状态，提交后统一为 `installed`。两系统及旧版迁移必须验证这条首次升级路径。
 
 ### Optional first-install assets
 

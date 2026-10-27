@@ -799,3 +799,37 @@ class RealBuildValidationTests(unittest.TestCase):
             self.assertEqual(manifest['status'],'installed')
             self.assertEqual(tomllib.loads(fixture.config.read_text())['model_provider'],'openai')
             self.assertEqual(json.loads((fixture.directory/'native-install-transaction.json').read_bytes())['phase'],'committed')
+
+class SimpleUninstallTests(unittest.TestCase):
+    def test_uninstall_discovers_latest_owned_build_and_preserves_backups(self):
+        from types import SimpleNamespace
+        for affinity in ('ds','proxy','unified'):
+            with self.subTest(affinity=affinity),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp).resolve();state=root/'monitor';state.mkdir();home=root/'home';home.mkdir();build=root/'build';build.mkdir()
+                config=home/'config.toml';before='model_catalog_json='+json.dumps(str(build/'desktop-models.json'))+'\nmodel="gpt-fixture"\n'
+                config.write_text(before);(home/'auth.json').write_text('fixture-login');(home/'sessions').mkdir();(home/'sessions/keep.jsonl').write_text('fixture-history')
+                p.save_json(build/'manifest.json',{'format':1,'edition':affinity,'architecture':installer.ARCHITECTURE,'status':'installed','codex_home':str(home),'target':str(root/'app')})
+                p.save_json(state/'settings.json',{'edition':affinity,'codex_home':str(home),'baseline':str(root/'older')})
+                p.save_json(state/'state.json',{'installed':{'baseline':str(build)}})
+                args=SimpleNamespace(state_dir=state,dry_run=True)
+                with mock.object(p,'EDITION','unified'),mock.object(p,'restore',return_value={'status':'restored'}) as restore,mock.object(p,'require_stopped') as stopped:
+                    report=p.uninstall(args);self.assertEqual(report['build'],str(build));restore.assert_not_called();stopped.assert_not_called()
+                    self.assertFalse((build/'config-before-uninstall.toml').exists())
+                    args.dry_run=False;p.uninstall(args)
+                    self.assertEqual(restore.call_args.args[0].directory,build)
+                    self.assertEqual((build/'config-before-uninstall.toml').read_text(),before)
+                self.assertEqual((home/'auth.json').read_text(),'fixture-login')
+                self.assertEqual((home/'sessions/keep.jsonl').read_text(),'fixture-history')
+
+    def test_uninstall_rejects_another_manager_without_changes(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp).resolve();state=root/'monitor';state.mkdir();home=root/'home';home.mkdir();build=root/'build';build.mkdir()
+            current='model_catalog_json='+json.dumps(str(root/'another-manager/models.json'))+'\n'
+            (home/'config.toml').write_text(current)
+            p.save_json(state/'settings.json',{'edition':'ds','codex_home':str(home),'baseline':str(build)})
+            p.save_json(build/'manifest.json',{'format':1,'edition':'ds','architecture':installer.ARCHITECTURE,'status':'installed','codex_home':str(home),'target':str(root/'app')})
+            with mock.object(p,'EDITION','unified'),mock.object(p,'restore') as restore,self.assertRaisesRegex(p.PatchError,'another configuration'):
+                p.uninstall(SimpleNamespace(state_dir=state))
+            restore.assert_not_called();self.assertEqual((home/'config.toml').read_text(),current)
+            self.assertFalse((build/'config-before-uninstall.toml').exists())

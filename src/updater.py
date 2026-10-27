@@ -23,7 +23,8 @@ import patch as p
 from windows_support import background_options
 
 REPOSITORY = 'limyum-creator/codex-deepseek-patch'
-CHANNELS = {'ds':'main', 'proxy':'codex/existing-proxy-models'}
+CHANNELS = {'ds':'main', 'proxy':'codex/existing-proxy-models', 'unified':'main'}
+UNIFIED_FEED = 'https://raw.githubusercontent.com/' + REPOSITORY + '/main/unified-update.json'
 CHECK_SECONDS = 3600
 # Full native/UI/failure matrices run once at release promotion. Each user's
 # download runs a small, headless contract smoke check; app compatibility is
@@ -69,7 +70,7 @@ def public_get(url, limit=7_000_000, progress=None):
 
 def validate_release(value, channel, highest=0):
     p.require(isinstance(value,dict) and value.get('format')==1,'Unknown release manifest')
-    p.require(value.get('edition')==channel and value.get('branch')==CHANNELS[channel], 'Release belongs to a different edition')
+    p.require(p.runtime_accepts(value.get('edition'),channel) and value.get('branch')==CHANNELS[value['edition']], 'Release belongs to a different edition')
     p.require(value.get('architecture') in (None,'legacy','official-client-v1'),'Unknown release architecture')
     p.require(type(value.get('sequence')) is int and value['sequence']>=highest and value['sequence']>0,'Release rollback refused')
     p.require(re.fullmatch(r'[0-9a-f]{40}',value.get('commit','')),'Release must pin an immutable commit')
@@ -228,11 +229,11 @@ def worker(root, action, job, work_directory):
 def activate_runtime(package, directory, expected_edition, *, checkpoint=None):
     package=Path(package);directory=Path(directory)
     identity=worker(package,'identity',{},directory/'activation')
-    p.require(identity['edition']==expected_edition,'Runtime edition mismatch')
+    p.require(p.runtime_accepts(identity['edition'],expected_edition),'Runtime edition mismatch')
     runtime=directory/'runtime'
     if runtime.resolve()==package.resolve():return
     try:
-        if edition(runtime)['edition']==expected_edition and runtime_digest(runtime,identity['files'])==identity['runtime_digest']:return
+        if p.runtime_accepts(edition(runtime)['edition'],expected_edition) and runtime_digest(runtime,identity['files'])==identity['runtime_digest']:return
     except (OSError,ValueError,p.PatchError):pass
     stage=Path(tempfile.mkdtemp(prefix='runtime-stage-',dir=directory))
     backup=None
@@ -247,7 +248,7 @@ def activate_runtime(package, directory, expected_edition, *, checkpoint=None):
             os.chdir(directory)  # Windows cannot rename its process working directory.
         backup=directory/('runtime-backup-'+str(time.time_ns())) if runtime.exists() else None
         old=worker(runtime,'identity',{'quiet_progress':True},directory/'activation-before') if backup else {}
-        p.require(not backup or old['edition']==expected_edition,'Previous runtime edition changed')
+        p.require(not backup or p.runtime_accepts(old['edition'],expected_edition),'Previous runtime edition changed')
         journal={'directory':str(directory.resolve()),'backup':backup.name if backup else None,
             'previous_digest':old.get('runtime_digest'),
             'previous_files':old.get('files',[]),
@@ -259,7 +260,7 @@ def activate_runtime(package, directory, expected_edition, *, checkpoint=None):
         try:
             os.replace(stage,runtime)
             ready=worker(runtime,'identity',{'quiet_progress':True},directory/'activation-confirm')
-            p.require(ready['edition']==expected_edition and ready['runtime_digest']==identity['runtime_digest'],
+            p.require(p.runtime_accepts(ready['edition'],expected_edition) and ready['runtime_digest']==identity['runtime_digest'],
                       'Activated update runtime failed its startup identity check')
         except BaseException:
             rollback_runtime(journal)
@@ -435,7 +436,7 @@ def reconcile_native_activation(directory, already_locked=False):
             if current_newer:build,manifest=current,prior
         expected=manifest.get('update',{}).get('runtime_digest')
         p.require(isinstance(expected,str) and re.fullmatch('[0-9a-f]{64}',expected)
-                  and edition(directory/'runtime')['edition']==recovery['edition']
+                  and p.runtime_accepts(edition(directory/'runtime')['edition'],recovery['edition'])
                   and runtime_digest(directory/'runtime')==expected,
                   'Native runtime activation is still pending')
         if (build/'native-install-transaction.json').is_file():
@@ -464,7 +465,7 @@ class UpdateBackend:
         self.base=select_backend(settings)
         self.directory=Path(settings['state_dir'])
         self.edition=settings['edition']
-        p.require(edition()['edition']==self.edition,'Installed runtime is from another edition')
+        p.require(p.runtime_accepts(edition()['edition'],self.edition),'Installed runtime is from another edition')
         self.cache_path=self.directory/'updates.json'
         self.cache=json.loads(self.cache_path.read_text(encoding="utf-8")) if self.cache_path.exists() else {}
         p.require(self.cache.get('edition',self.edition)==self.edition,'Update state belongs to another edition')
@@ -511,8 +512,18 @@ class UpdateBackend:
 
     def source_for_release(self, release, progress=None):
         installed=self.installed_metadata()
+        # One-time legacy bridge already contains the unified core. Metadata
+        # alone must not force a second install/restart of the same version.
+        # Recheck every executable/runtime file against the canonical feed.
+        current=edition(p.ROOT)
+        if (release.get('edition')=='unified' and current['edition'] in ('ds','proxy')
+                and current['version']==release['version']
+                and all(name in release['files'] and (p.ROOT/name).is_file()
+                        and p.file_sha(p.ROOT/name)==release['files'][name]
+                        for name in p.SERVICE_RUNTIME_FILES if name!='edition.json')):
+            return p.ROOT
         if ((installed.get('release') or {}).get('commit')==release['commit']
-                and edition(p.ROOT)['edition']==self.edition
+                and p.runtime_accepts(edition(p.ROOT)['edition'],self.edition)
                 and installed.get('runtime_digest')==runtime_digest(p.ROOT)):
             return p.ROOT
         return source_package(release,self.directory,progress=progress)
@@ -536,7 +547,7 @@ class UpdateBackend:
         if pinned:
             _, saved=pinned;meta=saved.get('update',{})
             package=Path(meta.get('package') or p.ROOT)
-            p.require(package.is_dir() and edition(package)['edition']==self.edition,'Accepted update package is unavailable')
+            p.require(package.is_dir() and p.runtime_accepts(edition(package)['edition'],self.edition),'Accepted update package is unavailable')
             p.require(runtime_digest(package)==meta['runtime_digest'],'Accepted update package changed')
             self.package=package;self.desired_runtime=meta['runtime_digest']
             self.desired_architecture=saved['architecture'];self.progress=accepted
@@ -553,8 +564,7 @@ class UpdateBackend:
             self.check_status=CheckStatus(self.directory,self.edition)
             self.check_status.publish('checking')
             try:
-                branch=CHANNELS[self.edition]
-                url='https://raw.githubusercontent.com/'+REPOSITORY+'/'+branch+'/update.json'
+                url=UNIFIED_FEED
                 release=validate_release(json.loads(public_get(url,200000)),self.edition,self.cache.get('highest_sequence',0))
                 previous=self.cache.get('release') or self.installed_metadata().get('release')
                 if previous and release['sequence']==previous['sequence']:
@@ -566,6 +576,7 @@ class UpdateBackend:
                 # intent once, after comparing the actual app/runtime/model state.
                 self.package=self.source_for_release(release,progress=self.check_status)
                 self.cache['release']=release
+                self.cache['update_channel']='unified'
             except Exception as error:
                 from monitor import safe_error
                 self.check_status.publish('failed')
@@ -579,7 +590,7 @@ class UpdateBackend:
                 self.warnings.append('Cached update package is unavailable; using the installed runtime')
                 self.package=p.ROOT
         identity=worker(self.package,'identity',{'quiet_progress':True},self.directory/'identity')
-        p.require(identity['edition']==self.edition,'Candidate runtime belongs to another edition')
+        p.require(p.runtime_accepts(identity['edition'],self.edition),'Candidate runtime belongs to another edition')
         self.desired_architecture=identity.get('architecture','legacy')
         p.require(self.desired_architecture in ('legacy','official-client-v1'),'Unknown candidate runtime architecture')
         from official_client_update import read_manifest

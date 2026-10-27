@@ -1,6 +1,6 @@
 {
   "architecture": "official-client-v1",
   "branch": "main",
-  "edition": "ds",
-  "version": "0.7.2"
+  "edition": "unified",
+  "version": "0.9.0"
 }

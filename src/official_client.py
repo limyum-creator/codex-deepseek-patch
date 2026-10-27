@@ -123,7 +123,7 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
     p.require(baseline is not None or isinstance(initial, dict), "Initial model configuration is required")
     prior = json.loads((baseline / "manifest.json").read_text(encoding="utf-8")) if baseline else initial['manifest']
     edition = edition or prior.get("edition", p.EDITION)
-    p.require(edition in ("ds", "proxy"), "Unknown native adapter edition")
+    p.require(edition in p.INSTALL_AFFINITIES, "Unknown native adapter edition")
     p.require(prior.get("edition", edition) == edition, "Native migration cannot change editions")
     before = p.read_config(codex_home / "config.toml")
     current = p.tomllib.loads(before)
@@ -152,9 +152,6 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
         from model_sync import validate_preferences
         routes = migrate_legacy_routes(routes, current, validate_preferences(model_preferences))
     p.require(isinstance(routes, dict), "External model routes must be a mapping")
-    if edition == "ds":
-        p.require(all(route["provider"] == p.PROVIDER for route in routes.values()),
-                  "The DS edition cannot import extension routes")
     effective = copy.deepcopy(prior)
     if model_snapshot:
         effective["model_specifications"] = model_snapshot.get("specs",effective.get("model_specifications",{}))
@@ -247,10 +244,6 @@ def initial_models(app, args):
     deepseek = getattr(args, 'deepseek_enabled', None)
     if deepseek is None:
         deepseek = p.EDITION == 'ds'
-    if p.EDITION == 'ds':
-        p.require(deepseek, 'The DS edition requires its DeepSeek route')
-        p.require(not getattr(args, 'proxy_config', None) and not getattr(args, 'connections', None),
-                  'Use the extension edition for other model services')
     with tempfile.TemporaryDirectory(prefix='native-model-catalog-') as temporary:
         env = {**os.environ, 'CODEX_HOME':temporary}
         raw = subprocess.check_output([str(p.cli_path(app)), 'debug', 'models', '--bundled'],
@@ -305,12 +298,17 @@ def build(args):
         app = discover_app()
     app = Path(app).resolve()
     baseline = getattr(args, 'baseline', None)
+    affinity = p.EDITION
+    if baseline:
+        previous=json.loads((Path(baseline)/'manifest.json').read_text(encoding='utf-8'))
+        affinity=previous.get('edition',p.EDITION)
+        p.require(p.runtime_accepts(p.EDITION,affinity),'The baseline belongs to another installation')
     initial = None if baseline else initial_models(app, args)
     snapshot = getattr(args, 'model_snapshot', None)
     if isinstance(snapshot, Path):
         snapshot = json.loads(snapshot.read_text(encoding='utf-8'))
     result = stage(app=app, codex_home=args.codex_home, output=args.output, baseline=baseline,
-                   edition=p.EDITION, model_snapshot=snapshot, initial=initial,
+                   edition=affinity, model_snapshot=snapshot, initial=initial,
                    install_target=getattr(args, 'install_target', None),
                    model_preferences=getattr(args, 'model_preferences', None))
     print('Prepared native model adapter:', args.output, flush=True)
