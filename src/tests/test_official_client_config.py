@@ -226,7 +226,8 @@ class NativeStagePreferencesTest(unittest.TestCase):
         import patch as p
         import official_client
         args=argparse.Namespace(deepseek_enabled=False,keychain_account='fixture',keychain_service='fixture')
-        with mock.object(p,'EDITION','proxy'),mock.object(p,'cli_path',return_value=Path('/official/cli')), \
+        with mock('official_client_update.verify_official',return_value={}), \
+             mock.object(p,'EDITION','proxy'),mock.object(p,'cli_path',return_value=Path('/official/cli')), \
              mock.object(official_client.subprocess,'check_output',return_value=json.dumps({'models':[{'slug':'gpt-fixture'}]}).encode()):
             with self.assertRaisesRegex(p.PatchError,'Configure at least one'):
                 official_client.initial_models(Path('/official'),args)
