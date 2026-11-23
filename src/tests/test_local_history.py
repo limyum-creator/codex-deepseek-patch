@@ -30,7 +30,12 @@ class LocalHistoryTests(unittest.TestCase):
     def read(self):return read_visible_history(self.home,THREAD,OPAQUE,cancelled=self.cancelled)
 
     def test_only_matching_prefix_is_read_and_source_is_unchanged(self):
+        expected=self.read()
+        self.rows.insert(2, {'type':'response_item','payload':{'type':'configuration_update',
+                           'role':'developer','reasoning':{'effort':'high'}}})
+        self.write()
         before=self.file.read_bytes();result=self.read()
+        self.assertEqual(result,expected)
         self.assertIn('GOAL_VISIBLE',json.dumps(result));self.assertIn('TOOL_VISIBLE',json.dumps(result))
         self.assertNotIn('AFTER_MUST_NOT_REPLAY',json.dumps(result));self.assertNotIn('cipher',json.dumps(result))
         self.assertEqual(self.file.read_bytes(),before)

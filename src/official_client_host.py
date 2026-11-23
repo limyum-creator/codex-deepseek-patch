@@ -367,6 +367,33 @@ def _one(pattern, text, label):
     return found[0]
 
 
+def chunk_adapter_binding(source):
+    """Find the selected mode and the account reason used by the submit memo."""
+    reasons = _one(r'"service-tier-loading";[^;]{0,600}\?\([^=]+='
+                   r'\[[^\]]+,(?P<quota>'+IDENT+r')\]\.filter\(Boolean\)',
+                   source, 'composer submit reasons')
+    quota = _one(r'\b'+re.escape(reasons['quota'])+r'=\(0,'+IDENT+r'\.'+IDENT+
+                 r'\)\('+IDENT+r'\.o,(?P<host>'+IDENT+r')\)',
+                 source, 'host quota reasons')
+    mode = _one(r'\{activeMode:(?P<mode>'+IDENT+r'),modes:[^{}]+'
+                r'\}=\(0,'+IDENT+r'\.'+IDENT+r'\)\([^;]+;',
+                source[quota.end():reasons.start()], 'active collaboration mode')
+    return quota.end()+mode.end(), quota['host'], mode['mode'], reasons['quota']
+
+
+def chunk_banner_binding(source):
+    selected = _one(r'\{hostId:(?P<raw>'+IDENT+r'),selectedModel:(?P<model>'+IDENT+
+                    r'),settings:'+IDENT+r'\}='+IDENT+r',(?P<host>'+IDENT+
+                    r')=void 0===(?P=raw)\?"local":(?P=raw)',
+                    source, 'banner selected model')
+    after = source[selected.end():selected.end()+6500]
+    gate = _one(r'(?P<result>'+IDENT+r')="local"==='+re.escape(selected['host'])+
+                r'&&'+IDENT+r'\|\|\(0,'+IDENT+r'\.is\)\('+IDENT+r','+
+                re.escape(selected['model'])+r'\)', after, 'banner account quota')
+    start, end = selected.end()+gate.start(), selected.end()+gate.end()
+    return start, end, selected['model'], gate['result']
+
+
 def transform(source, role, models):
     """Match the selected-model binding and preserve every other guard byte."""
     if MARKER in source:
@@ -375,6 +402,17 @@ def transform(source, role, models):
             not isinstance(m, str) or not m or '\0' in m for m in models):
         raise CompatibilityError("Explicit independent model IDs are required")
     ids = json.dumps(sorted(set(models)), ensure_ascii=True, separators=(',', ':'))
+    if role == 'chunk-adapter':
+        end, host, mode, quota = chunk_adapter_binding(source)
+        # Filter only the ChatGPT account reason, before the existing memo.
+        filtered = (f'if("local"==={host}&&{ids}.includes({mode}?.settings?.model))'
+                    f'{quota}={quota}.split(",").filter(reason=>reason!=="usage-limit").join(",");')
+        return source[:end] + MARKER + filtered + source[end:]
+    if role == 'chunk-banner':
+        start, end, model, result = chunk_banner_binding(source)
+        account, per_model = source[start:end].split('=', 1)[1].split('||', 1)
+        replacement = f'{result}=(!{ids}.includes({model})&&{account})||{per_model}'
+        return source[:start] + MARKER + replacement + source[end:]
     if role == 'adapter':
         match = _one(r'(?P<quota>'+IDENT+r')=(?P<hook>'+IDENT+r')\('
                      r'(?P<host>'+IDENT+r')===`local`&&(?P<atom>'+IDENT+r')\)', source,
@@ -400,13 +438,39 @@ def transform(source, role, models):
     return source[:match.start()] + MARKER + replacement + source[match.end():]
 
 
+def chunk_composer_assets(archive, inventory, base, models):
+    import patch as p
+    assets = {}
+    for member, entry in inventory.items():
+        if not re.fullmatch(r'webview/assets/async/\d+\.[a-f0-9]+\.js', member) or entry.get('unpacked'):
+            continue
+        raw = p.read_member(archive, entry, base)
+        if all(marker in raw for marker in (b'submitDisabledReasons:', b'"provider-blocked"',
+                                            b'"service-tier-loading"', b'activeMode:')):
+            role = 'chunk-adapter'
+        elif all(marker in raw for marker in (b',selectedModel:', b'sendBlocked:',
+                                              b'rateLimitWarningThreshold:', b'workCreditConversationId:')):
+            role = 'chunk-banner'
+        else:
+            continue
+        p.check_member(raw, entry)
+        adapted = transform(raw.decode('utf-8'), role, models).encode()
+        assets[member] = {'role': role, 'member': member, 'source_sha256': p.sha(raw),
+                          'adapted_sha256': p.sha(adapted)}
+    roles = [record['role'] for record in assets.values()]
+    if 'chunk-adapter' not in roles or roles.count('chunk-banner') != 1:
+        raise CompatibilityError('Native composer chunks were not uniquely identified')
+    return assets
+
+
 def prepare(app, models):
     """Read integrity-checked originals; persist only hashes and member names."""
     import patch as p
     archive = p.app_layout(app)['asar']
     header, base, _ = p.archive_header(archive)
+    inventory = dict(p.entries(header))
     assets = {}
-    for member, entry in p.entries(header):
+    for member, entry in inventory.items():
         role = ('adapter' if re.fullmatch(r'webview/assets/codex-composer-adapter-[\w-]+\.js', member)
                 else 'banner' if re.fullmatch(r'webview/assets/composer-content-[\w-]+\.js', member)
                 else None)
@@ -424,9 +488,14 @@ def prepare(app, models):
         adapted = transform(source, role, models).encode()
         assets[role] = {'member': member, 'source_sha256': p.sha(raw),
                         'adapted_sha256': p.sha(adapted)}
-    if set(assets) != {'adapter', 'banner'}:
+    if not assets:
+        assets = chunk_composer_assets(archive, inventory, base, models)
+        plan_format = 2
+    elif set(assets) == {'adapter', 'banner'}:
+        plan_format = 1
+    else:
         raise CompatibilityError('Native composer assets were not identified')
-    return {'format': 1, 'source_asar': p.file_sha(archive),
+    return {'format': plan_format, 'source_asar': p.file_sha(archive),
             'models': sorted(set(models)), 'assets': assets}
 
 
@@ -434,12 +503,21 @@ def assets(app, plan):
     """Revalidate against the staged application before any runtime interception."""
     import patch as p
     archive = p.app_layout(app)['asar']
-    if plan.get('format') != 1 or p.file_sha(archive) != plan.get('source_asar'):
+    if plan.get('format') not in (1, 2) or p.file_sha(archive) != plan.get('source_asar'):
         raise CompatibilityError('Codex changed; rebuild composer compatibility first')
     header, base, _ = p.archive_header(archive)
     inventory = dict(p.entries(header))
+    records = plan['assets']
+    if plan['format'] == 2:
+        roles = [record.get('role') for record in records.values()]
+        if ('chunk-adapter' not in roles or roles.count('chunk-banner') != 1
+                or any(key != record.get('member') for key, record in records.items())):
+            raise CompatibilityError('Native composer chunk plan is incomplete')
+    elif set(records) != {'adapter', 'banner'}:
+        raise CompatibilityError('Native composer asset plan is incomplete')
     result = {}
-    for role, record in plan['assets'].items():
+    for key, record in records.items():
+        role = record['role'] if plan['format'] == 2 else key
         entry = inventory.get(record['member'])
         if entry is None:
             raise CompatibilityError('Native composer asset disappeared')

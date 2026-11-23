@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import inference_adapter
 import patch
-from official_client_config import PROVIDER, prepare_config
+from official_client_config import prepare_config
 from scripts.test_context import Rpc
 from scripts.test_offline import isolated_environment, launch_options, probe_command, stop_probe
 
@@ -83,7 +83,7 @@ def run(app, build, auth_home, output, models, *, sandbox='workspace-write', pro
                 url = 'http://127.0.0.1:' + str(adapter.server_port) + '/' + profile['token'] + '/backend-api/codex'
                 config, _ = prepare_config('cli_auth_credentials_store="ephemeral"\nweb_search="disabled"\n'
                                             '[features]\napps=false\nmemories=false\n',
-                                            (build / 'desktop-models.json').resolve(), url, mode='native-summary')
+                                            (build / 'desktop-models.json').resolve(), url)
                 (base / 'home/config.toml').write_text(config, encoding='utf-8')
                 process = subprocess.Popen(probe_command(app), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL, text=True, encoding='utf-8', env=env, cwd=work, **launch_options())
@@ -101,11 +101,12 @@ def run(app, build, auth_home, output, models, *, sandbox='workspace-write', pro
                 report['account_type'] = (observed.get('account') or {}).get('type')
                 report['requires_openai_auth'] = observed.get('requiresOpenaiAuth')
                 patch.require(report['account_type'] == 'chatgpt' and report['requires_openai_auth'], 'Native ChatGPT login was not retained')
-                thread = rpc.request('thread/start', {'model':models[0], 'modelProvider':PROVIDER, 'cwd':str(work),
+                thread = rpc.request('thread/start', {'model':models[0], 'modelProvider':'openai', 'cwd':str(work),
                     'approvalPolicy':'never', 'sandbox':sandbox,
                     'baseInstructions':'This is a small connectivity and context-retention test. Follow each test exactly. '
                         'When asked, use the native shell tool to read only probe.txt in this directory. Do not edit any files.'})
                 tid = thread['thread']['id']
+                patch.require(thread['modelProvider'] == 'openai', 'Live chat lost the native OpenAI provider identity')
                 report['sandbox'] = thread.get('sandbox')
                 remembered = []
                 for index, model in enumerate(models):

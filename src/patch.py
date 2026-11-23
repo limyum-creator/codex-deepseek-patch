@@ -261,10 +261,14 @@ def verify_app(app, expected_asar=None):
     run(["/usr/bin/codesign", "--verify", "--deep", "--strict", app])
 
 
-def catalog_template(catalog):
-    models=[m for m in catalog['models'] if m.get('slug','').startswith('gpt-') and m.get('visibility','list')=='list']
-    require(models,'The native catalog has no usable GPT metadata template')
-    return next((m for m in models if m['slug']=='gpt-6.1-sol'),models[0])
+def catalog_template(catalog, *, excluded=(), required=True):
+    models = [model for model in catalog['models']
+              if model.get('slug', '').startswith('gpt-') and model['slug'] not in excluded
+              and model.get('visibility', 'list') == 'list']
+    if not models:
+        require(not required, 'The native catalog has no usable GPT metadata template')
+        return None
+    return min(models, key=lambda model: model['priority'] if type(model.get('priority')) is int else float('inf'))
 
 
 def make_catalog(original, deepseek=True):

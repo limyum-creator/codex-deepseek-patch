@@ -241,11 +241,14 @@ def stage(*, app, codex_home, output, baseline, edition=None, model_snapshot=Non
 def initial_models(app, args):
     """Use the vendor catalog and explicitly configured services for a fresh setup."""
     from model_sync import apply_reductions
+    from official_client_update import verify_official
+    from scripts.test_offline import isolated_environment
+    verify_official(app)
     deepseek = getattr(args, 'deepseek_enabled', None)
     if deepseek is None:
         deepseek = p.EDITION == 'ds'
     with tempfile.TemporaryDirectory(prefix='native-model-catalog-') as temporary:
-        env = {**os.environ, 'CODEX_HOME':temporary}
+        env = isolated_environment(Path(temporary))
         raw = subprocess.check_output([str(p.cli_path(app)), 'debug', 'models', '--bundled'],
                                       env=env, stderr=subprocess.PIPE, timeout=90, **p.background_options())
     catalog = p.make_catalog(json.loads(raw), deepseek=deepseek)

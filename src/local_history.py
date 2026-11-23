@@ -58,7 +58,8 @@ def visible_record(item):
     if not isinstance(item, dict):
         raise unavailable('A native history item is malformed')
     kind = item.get('type', 'message')
-    if kind in ('reasoning', 'additional_tools'):
+    # Native reasoning-effort updates are replay controls, not visible chat text.
+    if kind in ('reasoning', 'additional_tools', 'configuration_update'):
         return None
     if kind == 'message':
         if item.get('role') not in ('user', 'assistant') or item.get('channel') == 'analysis':

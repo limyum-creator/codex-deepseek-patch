@@ -300,7 +300,6 @@ class NativeComposerQuotaTests(unittest.TestCase):
         # Shipped quota/submit expressions on real DOM buttons, with synthetic
         # state. Keep this scope separate from a signed-in user's complete UI.
         import queue
-        import re
         import time
         import patch as p
         app=Path(os.environ['CODEX_COMPOSER_APP'])
@@ -314,7 +313,142 @@ class NativeComposerQuotaTests(unittest.TestCase):
         replacements=host.assets(app,plan)
         archive=p.app_layout(app)['asar'];header,base,_=p.archive_header(archive)
         inventory=dict(p.entries(header))
-        raw=p.read_member(archive,inventory[plan['assets']['adapter']['member']],base).decode()
+        if plan['format'] == 2:
+            js = self.chunk_button_contract(plan, replacements, archive, inventory, base, models)
+        else:
+            member = plan['assets']['adapter']['member']
+            raw = p.read_member(archive, inventory[member], base).decode()
+            js = self.legacy_button_contract(raw, archive, inventory, base, models)
+        if sys.platform=='darwin':
+            launch=host.isolated_mac_plan(app,root,verify=False)
+            for path in launch['directories']:Path(path).mkdir(parents=True,exist_ok=True)
+            env=launch['environment'];argv=launch['argv']
+        else:
+            for part in ('user','home','browser','temp'):(root/part).mkdir(exist_ok=True)
+            env={k:v for k,v in os.environ.items() if k.upper() in
+                 {'PATH','SYSTEMROOT','WINDIR','COMSPEC','APPDATA','LOCALAPPDATA','PROGRAMDATA',
+                  'PROGRAMFILES','PROGRAMFILES(X86)','USERPROFILE','USERNAME','USERDOMAIN','TEMP','TMP'}}
+            env.update(CODEX_HOME=str(root/'home'),CODEX_ELECTRON_USER_DATA_PATH=str(root/'browser'))
+            argv=[str(p.app_layout(app)['exe']),'--user-data-dir='+str(root/'browser')]
+        (root/'home/config.toml').write_text('cli_auth_credentials_store="file"\nweb_search="disabled"\n[features]\napps=false\nmemories=false\n')
+        proxy = 'http://127.0.0.1:9'
+        env.update(HTTP_PROXY=proxy, HTTPS_PROXY=proxy, ALL_PROXY=proxy,
+                   NO_PROXY='127.0.0.1,localhost', no_proxy='127.0.0.1,localhost')
+        argv.append('--proxy-server=' + proxy)
+        env['CODEX_ELECTRON_START_IN_BACKGROUND']='1'
+        pipe=host.Pipe(argv,env=env,cwd=root,package=sys.platform=='win32')
+        package_identity=None
+        controller=host.Controller(pipe,replacements);controller.start()
+        pending={};evaluated=set();result=None;deadline=time.monotonic()+25
+        try:
+            package_identity=None
+            if sys.platform=='darwin':
+                import ctypes
+                responsible=ctypes.CDLL(None).responsibility_get_pid_responsible_for_pid
+                responsible.argtypes=[ctypes.c_int];responsible.restype=ctypes.c_int
+                self.assertEqual(responsible(pipe.process.pid),pipe.process.pid)
+            if sys.platform=='win32':
+                import ctypes
+                from official_client_shortcut import official_entry
+                kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+                identity=kernel.GetApplicationUserModelId
+                identity.argtypes=[ctypes.c_void_p,ctypes.POINTER(ctypes.c_uint32),ctypes.c_wchar_p]
+                size=ctypes.c_uint32()
+                self.assertEqual(identity(int(pipe.process._handle),ctypes.byref(size),None),122)
+                value=ctypes.create_unicode_buffer(size.value)
+                self.assertEqual(identity(int(pipe.process._handle),ctypes.byref(size),value),0)
+                package_identity=value.value
+                self.assertEqual(package_identity,official_entry(app)['app_user_model_id'])
+            imported = False
+            import_id = None
+            while time.monotonic()<deadline:
+                try:message=pipe.messages.get(timeout=.5)
+                except queue.Empty:continue
+                if message is None:break
+                controller.handle(message)
+                if message.get('method')=='Target.attachedToTarget':
+                    sid=message['params']['sessionId'];pipe.send('Runtime.enable',session=sid)
+                if message.get('method')=='Runtime.executionContextCreated':
+                    context=message['params']['context'];sid=message.get('sessionId')
+                    if (context.get('auxData',{}).get('isDefault')
+                            and context.get('origin') == 'app://-' and sid not in evaluated):
+                        evaluated.add(sid)
+                        # Import the prepared assets in this original renderer too.
+                        import_id = pipe.send('Runtime.evaluate',{'expression':'Promise.all('+json.dumps(list(replacements))+'.map(u=>import(u)))','awaitPromise':True},sid)
+                        pending[pipe.send('Runtime.evaluate',{'expression':js,'awaitPromise':True,'returnByValue':True},sid)]=sid
+                if import_id is not None and message.get('id') == import_id:
+                    self.assertNotIn('exceptionDetails', message.get('result', {}), str(message)[:1600])
+                    self.assertNotIn('error', message)
+                    imported = True
+                if message.get('id') in pending:
+                    self.assertNotIn('exceptionDetails',message.get('result',{}),str(message)[:1600])
+                    result=message.get('result',{}).get('result',{}).get('value')
+                if result is not None and imported and controller.applied == replacements.keys():break
+            self.assertIsNotNone(result,'The isolated renderer did not complete its button contract')
+            self.assertTrue(imported, 'Prepared composer assets did not import')
+            self.assertEqual(controller.applied, replacements.keys(), 'Some prepared assets were not loaded')
+            for row in result:
+                self.assertEqual(row['blocked'],row['model'] not in models,row)
+                self.assertEqual(row['dispatched'],int(row['model'] in models),row)
+            report={'kind':'source-bound-native-renderer-button-contract','platform':sys.platform,'edition':edition,
+                    'checks':len(result),'status':'passed','plan':plan,'application_identity':package_identity,
+                    'mac_permission_owner_verified':sys.platform=='darwin',
+                    'scope':'Native quota and submit expressions; synthetic account/model state and DOM controls. No signed-in full-composer claim.'}
+            (root/'composer-result.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+        finally:
+            try:pipe.send('Browser.close')
+            except OSError:pass
+            pipe.process.wait(timeout=10);pipe.close()
+
+    def chunk_button_contract(self, plan, replacements, archive, inventory, base, models):
+        import patch as p
+        checks = []
+        banner = None
+        for record in plan['assets'].values():
+            member = record['member']
+            raw = p.read_member(archive, inventory[member], base).decode()
+            adapted = replacements['app://-/' + member.removeprefix('webview/')].decode()
+            if record['role'] == 'chunk-adapter':
+                end, hostname, mode, quota = host.chunk_adapter_binding(raw)
+                action = adapted[end+len(host.MARKER):adapted.index(';', end)+1]
+                checks.append(f'(hostName, model, reasons)=>{{const {hostname}=hostName,{mode}={{settings:{{model}}}};'
+                              f'let {quota}=reasons;{action}return {quota}}}')
+            else:
+                start, end, model, result = host.chunk_banner_binding(raw)
+                # Substitute fixture state for the two original native quota inputs.
+                account, per_model = raw[start:end].split('=', 1)[1].split('||', 1)
+                expression = adapted[start+len(host.MARKER):len(adapted)-len(raw[end:])]
+                expression = expression.replace(account, 'local&&limited').replace(per_model, 'perModel')
+                banner = f'({model},local,limited,perModel)=>{{let {expression};return {result}}}'
+        self.assertIsNotNone(banner)
+        return '''(async()=>{while(!document.body)await new Promise(resolve=>setTimeout(resolve,10));
+        const button=document.createElement('button');button.hidden=true;document.body.append(button);
+        let clicks=0;button.onclick=()=>clicks++;const out=[];
+        const filters=['''+','.join(checks)+'''], banner='''+banner+''';
+        const models='''+json.dumps(models)+''';
+        try {
+          for(const filter of filters) for(const session of ['new','existing'])
+          for(const model of ['gpt-fixture', ...models, 'unknown','gpt-fixture']){
+            const independent=models.includes(model), before=clicks;
+            button.disabled=Boolean(filter('local',model,'usage-limit'));button.click();
+            out.push({session,model,blocked:button.disabled,dispatched:clicks-before});
+            if(filter('remote',model,'usage-limit')!=='usage-limit' ||
+               !filter('local',model,'reserve-limit,usage-limit').includes('reserve-limit') ||
+               banner(model,true,true,false)===independent || !banner(model,true,true,true) ||
+               !banner(model,false,false,true)) throw Error('Native quota scope changed');
+            for(const other of ['caller-disabled','provider-blocked','policy-violation','service-tier-loading']){
+              button.disabled=Boolean(other||filter('local',model,'usage-limit'));
+              const beforeOther=clicks;button.click();
+              if(clicks!==beforeOther)throw Error('A native submit guard dispatched');
+            }
+          }
+          return out;
+        }finally{button.remove()}})()'''
+
+
+    def legacy_button_contract(self, raw, archive, inventory, base, models):
+        import re
+        import patch as p
         gate=host._one(r'(?P<quota>'+host.IDENT+r')=(?P<hook>'+host.IDENT+r')\((?P<hostname>'+host.IDENT+r')===`local`&&(?P<atom>'+host.IDENT+r')\)',raw,'quota')
         selected=host._one(r'(?P<mode>'+host.IDENT+r')\.settings\.model===`gpt-reserve`',raw[max(0,gate.start()-1500):gate.start()],'model')
         prop=host._one(r'recoveryNotices:'+host.IDENT+r',submitDisabled:(?P<guard>'+host.IDENT+r'),',raw,'submit prop')
@@ -373,74 +507,7 @@ class NativeComposerQuotaTests(unittest.TestCase):
           out.push({windowMinutes,chat,model,blocked:button.disabled,dispatched:calls-before});
           '''+guards+'''
         }return out;}finally{root.remove()}})()'''
-        if sys.platform=='darwin':
-            launch=host.isolated_mac_plan(app,root,verify=False)
-            for path in launch['directories']:Path(path).mkdir(parents=True,exist_ok=True)
-            env=launch['environment'];argv=launch['argv']
-        else:
-            for part in ('user','home','browser','temp'):(root/part).mkdir(exist_ok=True)
-            env={k:v for k,v in os.environ.items() if k.upper() in
-                 {'PATH','SYSTEMROOT','WINDIR','COMSPEC','APPDATA','LOCALAPPDATA','PROGRAMDATA',
-                  'PROGRAMFILES','PROGRAMFILES(X86)','USERPROFILE','USERNAME','USERDOMAIN','TEMP','TMP'}}
-            env.update(CODEX_HOME=str(root/'home'),CODEX_ELECTRON_USER_DATA_PATH=str(root/'browser'))
-            argv=[str(p.app_layout(app)['exe']),'--user-data-dir='+str(root/'browser')]
-        (root/'home/config.toml').write_text('cli_auth_credentials_store="file"\nweb_search="disabled"\n[features]\napps=false\nmemories=false\n')
-        env['CODEX_ELECTRON_START_IN_BACKGROUND']='1'
-        pipe=host.Pipe(argv,env=env,cwd=root,package=sys.platform=='win32')
-        package_identity=None
-        controller=host.Controller(pipe,replacements);controller.start()
-        pending={};evaluated=set();result=None;deadline=time.monotonic()+25
-        try:
-            package_identity=None
-            if sys.platform=='darwin':
-                import ctypes
-                responsible=ctypes.CDLL(None).responsibility_get_pid_responsible_for_pid
-                responsible.argtypes=[ctypes.c_int];responsible.restype=ctypes.c_int
-                self.assertEqual(responsible(pipe.process.pid),pipe.process.pid)
-            if sys.platform=='win32':
-                import ctypes
-                from official_client_shortcut import official_entry
-                kernel=ctypes.WinDLL('kernel32',use_last_error=True)
-                identity=kernel.GetApplicationUserModelId
-                identity.argtypes=[ctypes.c_void_p,ctypes.POINTER(ctypes.c_uint32),ctypes.c_wchar_p]
-                size=ctypes.c_uint32()
-                self.assertEqual(identity(int(pipe.process._handle),ctypes.byref(size),None),122)
-                value=ctypes.create_unicode_buffer(size.value)
-                self.assertEqual(identity(int(pipe.process._handle),ctypes.byref(size),value),0)
-                package_identity=value.value
-                self.assertEqual(package_identity,official_entry(app)['app_user_model_id'])
-            while time.monotonic()<deadline:
-                try:message=pipe.messages.get(timeout=.5)
-                except queue.Empty:continue
-                if message is None:break
-                controller.handle(message)
-                if message.get('method')=='Target.attachedToTarget':
-                    sid=message['params']['sessionId'];pipe.send('Runtime.enable',session=sid)
-                if message.get('method')=='Runtime.executionContextCreated':
-                    context=message['params']['context'];sid=message.get('sessionId')
-                    if context.get('auxData',{}).get('isDefault') and sid not in evaluated:
-                        evaluated.add(sid)
-                        # Import the prepared assets in this original renderer too.
-                        pipe.send('Runtime.evaluate',{'expression':'Promise.all('+json.dumps(list(replacements))+'.map(u=>import(u)))','awaitPromise':True},sid)
-                        pending[pipe.send('Runtime.evaluate',{'expression':js,'awaitPromise':True,'returnByValue':True},sid)]=sid
-                if message.get('id') in pending:
-                    self.assertNotIn('exceptionDetails',message.get('result',{}),str(message)[:1600])
-                    result=message.get('result',{}).get('result',{}).get('value')
-                if result is not None and len(controller.applied)==2:break
-            self.assertIsNotNone(result,'The isolated renderer did not complete its button contract')
-            self.assertEqual(len(controller.applied),2,'Prepared composer assets were not both loaded')
-            for row in result:
-                self.assertEqual(row['blocked'],row['model'] not in models,row)
-                self.assertEqual(row['dispatched'],int(row['model'] in models),row)
-            report={'kind':'source-bound-native-renderer-button-contract','platform':sys.platform,'edition':edition,
-                    'checks':len(result),'status':'passed','plan':plan,'application_identity':package_identity,
-                    'mac_permission_owner_verified':sys.platform=='darwin',
-                    'scope':'Native quota and submit expressions; synthetic account/model state and DOM controls. No signed-in full-composer claim.'}
-            (root/'composer-result.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
-        finally:
-            try:pipe.send('Browser.close')
-            except OSError:pass
-            pipe.process.wait(timeout=10);pipe.close()
+        return js
 
 
 

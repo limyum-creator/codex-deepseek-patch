@@ -575,7 +575,8 @@ def install(directory, manifest):
                     _record(directory, transaction, 'metadata_migrating')
                     with native_session(target, home) as rpc:
                         manifest['native_identity_migration'] = migrate(rpc, {'codex-model-adapter'},
-                            directory / transaction['migration_file'], target='openai')
+                            directory / transaction['migration_file'], target='openai',
+                            retain_adapter=ownership.get('provider') is not None)
                     manifest['native_identity_migration_journal'] = str(directory / transaction['migration_file'])
             verify_official(target)
             p.require(healthy(settings), 'The native adapter stopped after activation')
