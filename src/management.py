@@ -999,7 +999,7 @@ CATEGORIES = [
     ('preferences', '偏好', '外观、快捷键与维护', 'M5 4V20 M12 4V20 M19 4V20 M2 8H8 M9 16H15 M16 10H22'),
 ]
 PALETTES = {
-    'light': {'surface':'#FFFFFF','field':'#F6F8FB','text':'#28344A','muted':'#8390A5',
+    'light': {'surface':'#FFFFFF','field':'#F6F8FB','text':'#28344A','muted':'#596C85',
               'alert':'#FDEBED','alert_line':'#F0CBD0','alert_ink':'#B85D6B','line':'#E7ECF3','accent':'#4D6BFE','hover':'#EDF2FF','danger':'#C64861'},
     'dark': {'surface':'#202A3C','field':'#151E2F','text':'#EEF3FF','muted':'#9AAAC5',
              'alert':'#543540','alert_line':'#805564','alert_ink':'#F2B2BD','line':'#354159','accent':'#8196FF','hover':'#344366','danger':'#FF9DB0'},
@@ -1014,7 +1014,7 @@ HUB_LAYOUT = {
     'spout_x':66, 'spout_y':116,
     'badge':{'offset_x':-20,'offset_y':10,'size':28,'angle':-65,'shape':0,
              'icon_x':-1.25,'icon_y':0.5},
-    'card_width':320, 'card_height':420,
+    'card_width':352, 'card_height':440,
     'dock':{'size':32, 'threshold':28, 'leave_ms':100, 'poll_ms':60, 'duration_ms':180,
             'angles':{'left':90,'right':-90,'top':180,'bottom':0}},
     'morph':{'duration_ms':340,'close_ms':250,'radius':16,'wave':0.018},
@@ -1305,8 +1305,8 @@ def footer_layout(buttons, back=False):
     count=len(buttons)+(1 if back else 0)
     columns=2 if count>3 or any(len(b['title'])>6 for b in buttons) else max(1,count)
     rows=math.ceil(count/columns)
-    return {'columns':columns,'rows':rows,'top':410-rows*36,
-            'width':(292-(columns-1)*6)/columns,'height':30,'gap':6}
+    return {'columns':columns,'rows':rows,'top':HUB_LAYOUT['card_height']-10-rows*36,
+            'width':(HUB_LAYOUT['card_width']-28-(columns-1)*6)/columns,'height':30,'gap':6}
 
 
 def hub_number(value):
@@ -1415,16 +1415,18 @@ def hub_dispatch(directory, payload, revision, cancelled=None):
         if intent=='cleanup_preview':
             result=perform(intent);labels[intent]=('清理缓存',f"预计释放 {result['bytes']/1048576:.1f} MB；保留当前安装和回退链。",'cleanup')
         title,message,action=labels[intent]
+        buttons=[hub_button('返回','navigate',route=route,key=key),
+                 hub_button('确认','confirmed',style='danger',action=action)]
         return {**hub_view(directory,route,key),'title':title,'rows':[{'type':'note','text':message}],
-                'buttons':[hub_button('返回','navigate',route=route,key=key),
-                           hub_button('确认','confirmed',style='danger',action=action)],'confirmation':action}
+                'buttons':buttons,'back':None,'footer':footer_layout(buttons),'confirmation':action}
     elif intent=='confirmed':
         action=payload.get('action')
         m.require(action in ('remove_connection','restore','recover','cleanup'),'无效的确认操作。')
         result=perform(action,{'id':key} if action=='remove_connection' else {'confirmed':True})
         if action=='restore':
+            buttons=[hub_button('退出','quit')]
             return {'route':'preferences','title':'已卸载并恢复原生 Codex','rows':[{'type':'note','text':result.get('message','设置窗口可以关闭。')}],
-                    'buttons':[hub_button('退出','quit')],'revision':revision,'options':hub_options(directory)}
+                    'buttons':buttons,'footer':footer_layout(buttons),'revision':revision,'options':hub_options(directory)}
         if action=='remove_connection':route='connections';key=None
     else:m.require(False,'未知设置操作。')
     return hub_view(directory,route,key,notice or ('操作完成。' if intent!='diagnose' else None),extra=extra)

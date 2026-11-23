@@ -118,10 +118,8 @@ def adapt_catalog(catalog, routes, current_config, *, apply_root_preferences=Tru
             raise ValueError("Context preferences must be positive integers")
     # Only native metadata can define native tool variants. External catalog
     # builders previously disabled these even for models with tool support.
-    templates = [m for m in catalog["models"] if m["slug"] not in routes
-                 and m["slug"].startswith("gpt-") and m.get("visibility", "list") == "list"]
-    template = next((m for m in templates if m["slug"] == "gpt-6.1-sol"),
-                    templates[0] if templates else None)
+    from patch import catalog_template
+    template = catalog_template(catalog, excluded=routes, required=False)
     seen = set()
     for model in result["models"]:
         slug = model["slug"]

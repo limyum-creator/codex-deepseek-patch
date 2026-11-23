@@ -165,6 +165,16 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(result["models"][-1]["use_responses_lite"])
         self.assertEqual(result["models"][-1]["service_tiers"], [])
 
+    def test_catalog_template_uses_native_priority_and_ignores_hidden_and_routed_models(self):
+        catalog = {'models': [
+            {'slug':'gpt-without-priority'},
+            {'slug':'gpt-6.1-sol','priority':4},
+            {'slug':'gpt-hidden','priority':0,'visibility':'hide'},
+            {'slug':'gpt-external','priority':1},
+            {'slug':'gpt-6.2-sol','priority':2},
+        ]}
+        self.assertEqual(patch.catalog_template(catalog, excluded={'gpt-external'})['slug'], 'gpt-6.2-sol')
+
 
 class TransactionTests(unittest.TestCase):
     @staticmethod

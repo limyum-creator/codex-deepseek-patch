@@ -175,7 +175,9 @@ class Fixture:
         def session(app, home):
             yield fixture.metadata
 
-        def migrate(rpc, providers, path, *, target=PROVIDER):
+        def migrate(rpc, providers, path, *, target=PROVIDER, retain_adapter=False):
+            if providers == {PROVIDER} and target == 'openai':
+                assert retain_adapter
             fixture.metadata_calls.append('migrate')
             p.save_json(path, {'format':1, 'target':target, 'phase': 'running', 'before': copy.deepcopy(rpc),
                                'threads':[{'id':key,'provider':value} for key,value in rpc.items()]})

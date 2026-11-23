@@ -23,6 +23,10 @@ from monitor import atomic_json
 from official_client_config import PROVIDER
 
 
+class ProviderChangeUnsupported(ValueError):
+    """The native API requires the chat to keep its saved provider."""
+
+
 class MetadataRpc:
     """A bounded native RPC client which cannot submit a model turn."""
     METHODS = {"initialize", "thread/list", "thread/read", "thread/resume", "thread/unsubscribe",
@@ -53,8 +57,15 @@ class MetadataRpc:
             if response.get("id") != self.counter:
                 continue
             if "error" in response:
+                error = response["error"]
+                message = error.get("message", "")
+                if (method == "thread/resume" and error.get("code") == -32600
+                        and message.startswith("failed to load configuration: Cannot change this thread's model provider from ")
+                        and message.endswith(" on resume.")):
+                    raise ProviderChangeUnsupported(
+                        "This Codex version requires chats to keep their saved model provider.")
                 raise RuntimeError("Native metadata operation failed: " + method + " (" +
-                                   str(response["error"].get("code")) + ")")
+                                   str(error.get("code")) + ")")
             return response["result"]
         raise TimeoutError("Native metadata operation timed out")
 
@@ -240,7 +251,16 @@ def _set_provider(rpc, row, target, archived_ids):
             archived_ids.add(row["id"])
 
 
-def migrate(rpc, providers, journal_path, *, target=PROVIDER):
+def _migration_result(journal):
+    retained = sum(row['phase'] == 'retained' for row in journal['threads'])
+    result = {"status":"passed", "migrated_chats":len(journal["threads"])-retained,
+              "archived_chats":sum(row["archived"] for row in journal["threads"]), "inference_turns":0}
+    if retained:
+        result['retained_chats'] = retained
+    return result
+
+
+def migrate(rpc, providers, journal_path, *, target=PROVIDER, retain_adapter=False):
     """Migrate the complete recorded inventory, resuming safely after interruption."""
     journal_path = Path(journal_path)
     if target not in (PROVIDER, 'openai'):
@@ -256,29 +276,39 @@ def migrate(rpc, providers, journal_path, *, target=PROVIDER):
         atomic_json(journal_path, journal)
     if journal["phase"] == "rolled_back":
         raise ValueError("Choose a new migration journal after a rollback")
+    if not retain_adapter and any(row['phase'] == 'retained' for row in journal['threads']):
+        raise ValueError("The migration requires the owned legacy provider definition")
     if journal["phase"] == "complete":
-        return {"status":"passed", "migrated_chats":len(journal["threads"]),
-                "archived_chats":sum(row["archived"] for row in journal["threads"]), "inference_turns":0}
+        return _migration_result(journal)
     archived_ids = {row['id'] for row in inventory(rpc, providers | {target}) if row['archived']}
     for row in journal["threads"]:
-        if row["phase"] == "migrated":
+        if row["phase"] in ("migrated", "retained"):
             continue
         _metadata_for_row(rpc, row)
         row["phase"] = "changing"
         journal["phase"] = "running"
         atomic_json(journal_path, journal)
         try:
-            _set_provider(rpc, row, target, archived_ids)
+            try:
+                _set_provider(rpc, row, target, archived_ids)
+            except ProviderChangeUnsupported:
+                if not retain_adapter or row['provider'] != PROVIDER:
+                    raise
+                thread = rpc.request('thread/read', {'threadId':row['id'], 'includeTurns':False})['thread']
+                if (thread.get('modelProvider') != PROVIDER
+                        or not metadata_matches(row['metadata'], thread)):
+                    raise ValueError("The retained chat did not preserve its native provider and metadata")
+                row['phase'] = 'retained'
+            else:
+                row['phase'] = 'migrated'
         except Exception:
             journal["phase"] = "needs_recovery"
             atomic_json(journal_path, journal)
             raise
-        row["phase"] = "migrated"
         atomic_json(journal_path, journal)
     journal["phase"] = "complete"
     atomic_json(journal_path, journal)
-    return {"status":"passed", "migrated_chats":len(journal["threads"]),
-            "archived_chats":sum(row["archived"] for row in journal["threads"]), "inference_turns":0}
+    return _migration_result(journal)
 
 
 def rollback(rpc, journal_path):
@@ -290,9 +320,13 @@ def rollback(rpc, journal_path):
     for row in reversed(journal["threads"]):
         if row["phase"] not in ("changing", "migrated"):
             continue
-        _metadata_for_row(rpc, row)
+        metadata = _metadata_for_row(rpc, row)
         atomic_json(journal_path, journal)
-        _set_provider(rpc, row, row["provider"], archived_ids)
+        thread = rpc.request('thread/read', {'threadId':row['id'], 'includeTurns':False})['thread']
+        if (thread.get('modelProvider') != row['provider']
+                or not metadata_matches(metadata, thread)
+                or (row['id'] in archived_ids) != row['archived']):
+            _set_provider(rpc, row, row["provider"], archived_ids)
         row["phase"] = "restored"
         atomic_json(journal_path, journal)
     journal["phase"] = "rolled_back"

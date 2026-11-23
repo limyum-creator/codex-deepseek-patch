@@ -158,6 +158,18 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual([r['title'] for r in page['rows']],['DeepSeek','现成代理','Work PC'])
             self.assertEqual(ui.hub_view(self.root,'connections/edit')['route'],'connections/edit')
 
+    def test_confirmation_footers_fit_their_own_actions(self):
+        cases = [('updates/maintenance', None, 'confirm_restore'),
+                 ('connections/edit', 'local-workpc', 'confirm_remove')]
+        for route, key, intent in cases:
+            with self.subTest(intent=intent):
+                page = ui.hub_dispatch(self.root, {'route':route, 'key':key, 'intent':intent},
+                                       ui.revision(self.root))
+                self.assertIsNone(page['back'])
+                self.assertEqual([b['intent'] for b in page['buttons']], ['navigate', 'confirmed'])
+                self.assertEqual(page['footer'], ui.footer_layout(page['buttons']))
+                self.assertEqual((page['footer']['rows'], page['footer']['columns']), (1, 2))
+
     def test_update_page_embeds_progress_and_actions_keep_current_update_identity(self):
         import update_progress
         progress=update_progress.Progress(self.root)
@@ -301,7 +313,7 @@ class SettingsTests(unittest.TestCase):
         motion=value['motion']
         self.assertGreaterEqual(motion['opened'],2)
         self.assertGreaterEqual(motion['closed'],2)
-        for name in ('hover_revealed','leave_retracted','detached','form_held','reduced','idle_timer_stopped','release_stays_collapsed','reentry_reveals','arrival_hint','hint_cleared','spray_released','explicit_wake_holds','explicit_wake_retracts','edge_click_deferred','edge_click_coalesced','edge_click_revealed','hidden_click_cancelled'):
+        for name in ('hover_revealed','leave_retracted','detached','form_held','reduced','idle_timer_stopped','release_stays_collapsed','reentry_reveals','arrival_hint','hint_cleared','spray_released','explicit_wake_holds','explicit_wake_retracts','edge_click_deferred','edge_click_coalesced','edge_click_revealed','hidden_click_cancelled','orbit_reversal','reduced_card'):
             self.assertTrue(motion[name],(name,motion))
         if sys.platform=='win32':self.assertTrue(motion['no_dotted_focus'])
         self.assertEqual(motion['edges'],[True]*4)
@@ -417,8 +429,8 @@ class WhaleReliabilityTests(unittest.TestCase):
                     x=14+(i%layout['columns'])*(layout['width']+layout['gap'])
                     y=layout['top']+(i//layout['columns'])*36
                     rect=(x,y,x+layout['width'],y+layout['height'])
-                    self.assertGreaterEqual(x,14);self.assertLessEqual(rect[2],306)
-                    self.assertGreater(y,200);self.assertLessEqual(rect[3],410)
+                    self.assertGreaterEqual(x,14);self.assertLessEqual(rect[2],ui.HUB_LAYOUT['card_width']-14)
+                    self.assertGreater(y,200);self.assertLessEqual(rect[3],ui.HUB_LAYOUT['card_height']-10)
                     for a,b,c,d in rectangles:
                         self.assertTrue(rect[2]<=a or x>=c or rect[3]<=b or y>=d)
                     rectangles.append(rect)

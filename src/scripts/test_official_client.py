@@ -37,7 +37,6 @@ from scripts.test_switching import finish
 from scripts.test_tools import Stub as ToolStub, mcp_fixture
 
 PROVIDER = 'openai'
-GPT = 'gpt-6.1-sol'
 DS = 'deepseek-flash'
 
 # Valid, synthetic 8x8 PNG. No provider call or image generation charge.
@@ -99,6 +98,7 @@ class NativeServicesFixture(http.server.BaseHTTPRequestHandler):
                 'compact':self.path.endswith('/compact') or inference_adapter._is_compaction(body)})
             return self.respond(body)
         if self.path.startswith('/rejected/'):
+            self.server.rejected_requests += 1
             value = json.dumps({'error': {'message': 'Synthetic request rejected'}}).encode()
             self.send_response(400)
             self.send_header('Content-Length', str(len(value)))
@@ -240,7 +240,8 @@ def native_image_contract(app, reportdir, edition):
         catalog = base / 'catalog.json'
         raw = subprocess.check_output([str(patch.cli_path(app)), 'debug', 'models', '--bundled'],
                                       env=env, stderr=subprocess.PIPE, timeout=60, **patch.background_options())
-        entry = next(v for v in json.loads(raw)['models'] if v['slug'] == GPT)
+        entry = patch.catalog_template(json.loads(raw))
+        gpt = entry['slug']
         entry.update(prefer_websockets=True, use_responses_lite=True)
         patch.save_json(catalog, {'models': [entry]})
         current = ('chatgpt_base_url="https://127.0.0.1:' + str(metadata.server_port)
@@ -258,7 +259,7 @@ def native_image_contract(app, reportdir, edition):
                                   'capabilities': {'experimentalApi': True}})
         rpc.request('account/login/start', {'type': 'chatgptAuthTokens', 'accessToken': token,
                                           'chatgptAccountId': 'synthetic-account'})
-        tid = rpc.request('thread/start', {'model': GPT, 'modelProvider': 'openai',
+        tid = rpc.request('thread/start', {'model': gpt, 'modelProvider': 'openai',
                           'cwd': str(work), 'approvalPolicy': 'never',
                           'sandbox': 'danger-full-access' if sys.platform == 'win32' else 'workspace-write'})['thread']['id']
         turn = rpc.request('turn/start', {'threadId': tid, 'input': [{'type': 'text', 'text': 'Run synthetic image fixtures.'}]})
@@ -287,15 +288,17 @@ def native_image_contract(app, reportdir, edition):
         # Keep the same native WebSocket and provoke a registered-service 400.
         # Without the adapter's status field the native client silently waits
         # until its response deadline instead of finishing this failed turn.
-        adapter.profile['routes'][GPT] = {'base_url': base_url + '/rejected',
+        adapter.profile['routes'][gpt] = {'base_url': base_url + '/rejected',
             'credential': {'kind': 'file', 'path': str(base / 'unused-synthetic-key')}}
+        upstream.rejected_requests = 0
         started = time.monotonic()
         turn = rpc.request('turn/start', {'threadId': tid,
             'input': [{'type': 'text', 'text': 'Exercise the synthetic rejection.'}]})
         try:
             finish_services(rpc, tid, turn, timeout=15)
         except RuntimeError as exc:
-            patch.require('400' in str(exc), 'Native client received an unexpected failure')
+            patch.require(upstream.rejected_requests > 0 and 'Synthetic request rejected' in str(exc),
+                          'Native client did not surface the synthetic HTTP 400')
         else:
             raise AssertionError('Native rejection did not finish as a failed turn')
         patch.require(time.monotonic() - started < 15, 'Native error waited for an idle deadline')
@@ -318,7 +321,7 @@ def native_image_contract(app, reportdir, edition):
         rpc=Rpc(process)
         rpc.request('initialize',{'clientInfo':{'name':'large_native_history','version':'1'},'capabilities':{'experimentalApi':True}})
         rpc.request('account/login/start',{'type':'chatgptAuthTokens','accessToken':token,'chatgptAccountId':'synthetic-account'})
-        tid=rpc.request('thread/start',{'model':GPT,'modelProvider':'openai','cwd':str(work),
+        tid=rpc.request('thread/start',{'model':gpt,'modelProvider':'openai','cwd':str(work),
             'approvalPolicy':'never','sandbox':'danger-full-access' if sys.platform=='win32' else 'workspace-write'})['thread']['id']
         turn=rpc.request('turn/start',{'threadId':tid,'input':[{'type':'text','text':'Synthetic history fixture.'},
                                                              {'type':'image','url':image}]})
@@ -392,7 +395,7 @@ class Fixture(ToolStub):
             ws.close()
 
     def record(self, body, raw, transport):
-        if body.get('model')==GPT:
+        if body.get('model')==self.server.gpt_model:
             from reasoning_origin import MESSAGE_PREFIX, LEGACY_MESSAGE_ID
             patch.require(not any(isinstance(i,dict) and i.get('type')=='message' and isinstance(i.get('id'),str)
                 and (i['id'].startswith(MESSAGE_PREFIX) or LEGACY_MESSAGE_ID.fullmatch(i['id'])) for i in body.get('input',[])),
@@ -409,7 +412,7 @@ class Fixture(ToolStub):
             'official_account_header': self.headers.get('ChatGPT-Account-ID') is not None})
 
     def reject_exhausted_gpt(self, body, ws=None):
-        if body.get('model') != GPT or not getattr(self.server, 'official_exhausted', False):
+        if body.get('model') != self.server.gpt_model or not getattr(self.server, 'official_exhausted', False):
             return False
         error = {'type':'usage_limit_reached', 'code':'usage_limit_reached',
                  'message':'Synthetic ChatGPT usage limit reached', 'plan_type':'plus',
@@ -431,7 +434,7 @@ class Fixture(ToolStub):
         if not warmup:
             self.server.next_usage = 10
         item = item or self.message('CONTEXT_OK')
-        if body['model'] == GPT and inference_adapter._is_compaction(body):
+        if body['model'] == self.server.gpt_model and inference_adapter._is_compaction(body):
             item = {'type':'compaction', 'id':'cmp_native_fixture_' + str(index),
                     'encrypted_content':'opaque-native-fixture-' + str(index)}
         response = {'id': 'resp_native_' + str(index), 'object': 'response', 'created_at': int(time.time()),
@@ -662,7 +665,9 @@ def run(app, reportdir, edition, *, services=False, progress=None):
                 env=env, stderr=subprocess.PIPE, timeout=60, **patch.background_options())
             native = json.loads(raw)
             template = patch.catalog_template(native)
-            models = [(GPT, 272000), (DS, 1048576)]
+            gpt = template['slug']
+            report['official_model'] = gpt
+            models = [(gpt, 272000), (DS, 1048576)]
             if edition != 'ds':
                 models += [('grok-4.7', 500000), ('gemini-3.8-flash-high', 1048576), ('local-probe', 256000), ('messages-probe', 1000000)]
             entries = []
@@ -673,16 +678,17 @@ def run(app, reportdir, edition, *, services=False, progress=None):
                     auto_compact_token_limit=int(window * .7), effective_context_window_percent=100,
                     supported_reasoning_levels=[{'effort': v, 'description': v} for v in levels],
                     default_reasoning_level='high', supports_reasoning_effort_updates=True,
-                    use_responses_lite=slug == GPT, prefer_websockets=slug == GPT, tool_mode=None,
+                    use_responses_lite=slug == gpt, prefer_websockets=slug == gpt, tool_mode=None,
                     experimental_supported_tools=[], visibility='list',
                     supports_search_tool=True, shell_type='unified_exec')
                 entries.append(entry)
             catalog = base / 'models.json'
             catalog_routes = {slug: {'context_window': window, 'max_context_window': window,
-                'compact_limit': int(window * .7)} for slug, window in models if slug != GPT}
+                'compact_limit': int(window * .7)} for slug, window in models if slug != gpt}
             patch.save_json(catalog, adapt_catalog({'models': entries}, catalog_routes, {}))
             upstream = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture)
             upstream.daemon_threads = True
+            upstream.gpt_model = gpt
             upstream.records, upstream.requests, upstream.wire = [], [], []
             upstream.phase, upstream.answer_usage, upstream.next_usage = 'message', 3000, 10
             upstream.tool_mode, upstream.compactions, upstream.upgrades = False, 0, 0
@@ -690,13 +696,13 @@ def run(app, reportdir, edition, *, services=False, progress=None):
             upstream.recovery_summaries = []
             endpoint = 'http://127.0.0.1:' + str(upstream.server_port)
             profile = {'format': 1, 'edition': edition, 'identity': 'synthetic-official-client-' + edition,
-                'token': 'synthetic-local-token-' + 'x' * 32, 'port': 0, 'official_models': [GPT],
-                'history_home':str(base/'home'), 'legacy_history_dir':str(base/'cache'), 'summary_model':GPT,
+                'token': 'synthetic-local-token-' + 'x' * 32, 'port': 0, 'official_models': [gpt],
+                'history_home':str(base/'home'), 'legacy_history_dir':str(base/'cache'), 'summary_model':gpt,
                 'gpt': {'chatgpt_base_url': endpoint + '/official', 'api_base_url': endpoint + '/official'},
                 'routes': {slug: {'base_url': endpoint + '/route', 'credential': {'kind': 'file', 'path': str(base / 'route.key')},
                     'tool_adapter': True, 'flatten_namespaces': slug == 'local-probe',
                     'normalize_instructions': slug == 'local-probe', 'chat_only': False,
-                    'context_window':window} for slug, window in models if slug != GPT}}
+                    'context_window':window} for slug, window in models if slug != gpt}}
             if 'local-probe' in profile['routes']:
                 profile['routes']['local-probe'].update(credential={'kind':'none'},
                     wire_api='chat_completions', supports_reasoning_effort=True)
@@ -773,11 +779,12 @@ def run(app, reportdir, edition, *, services=False, progress=None):
                 stop_owned()
                 process = subprocess.Popen(probe_command(app), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
                     text=True, encoding='utf-8', errors='replace', env=env, cwd=work, **launch_options())
-                rpc = Rpc(process)
+                from official_client_migration import MetadataRpc, migrate
+                rpc = MetadataRpc(process)
                 rpc.request('initialize', {'clientInfo':{'name':'native_identity_migration_probe','version':'1'},
                     'capabilities':{'experimentalApi':True}})
-                from official_client_migration import migrate
-                migration = migrate(rpc, {'codex-model-adapter'}, base/'migration.json', target='openai')
+                migration = migrate(rpc, {'codex-model-adapter'}, base/'migration.json', target='openai',
+                                    retain_adapter=True)
                 stop_owned()
                 process = subprocess.Popen(probe_command(app), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
                     text=True, encoding='utf-8', errors='replace', env=env, cwd=work, **launch_options())
@@ -786,13 +793,23 @@ def run(app, reportdir, edition, *, services=False, progress=None):
                     'capabilities':{'experimentalApi':True}})
                 resumed = rpc.request('thread/resume', {'threadId':tid, 'excludeTurns':True,
                     'approvalPolicy':'never', 'sandbox':sandbox})
-                patch.require(migration['migrated_chats'] == 1 and resumed['modelProvider'] == 'openai'
-                    and resumed['thread']['id'] == tid, 'Existing chat did not regain native provider identity')
+                retained = migration.get('retained_chats') == 1
+                expected_provider = 'codex-model-adapter' if retained else 'openai'
+                patch.require(migration['migrated_chats'] == int(not retained)
+                    and resumed['modelProvider'] == expected_provider
+                    and resumed['thread']['id'] == tid, 'Existing chat could not resume under its supported native provider')
+                report['existing_chat_provider'] = expected_provider
+                if retained:
+                    turn(DS, 'resume preserved legacy adapter chat')
+                    turns.clear()
+                    tid = rpc.request('thread/start', {'model': DS, 'modelProvider': 'openai', 'cwd': str(work),
+                        'approvalPolicy': 'never', 'sandbox': sandbox,
+                        'baseInstructions': 'This is a synthetic local regression.'})['thread']['id']
                 report['checks']['existing_chat_native_identity_migration'] = 'passed'
                 turn(DS, 'registered model local WS prewarm')
                 for model, _ in models:
                     turn(model, 'same-thread switch')
-                turn(GPT, 'return to GPT')
+                turn(gpt, 'return to GPT')
                 report['checks']['same_thread_model_switching'] = 'passed'
                 report['checks']['native_cross_provider_message_ids'] = 'passed'
                 target = DS if edition == 'ds' else 'grok-4.7'
@@ -807,7 +824,7 @@ def run(app, reportdir, edition, *, services=False, progress=None):
                               'Automatic native compaction did not run')
                 _compact(rpc, tid)
                 turn(target, 'after manual plain compaction')
-                turn(GPT, 'return to GPT after plain compaction')
+                turn(gpt, 'return to GPT after plain compaction')
                 turn(target, 'return to registered model after plain compaction')
                 report['checks']['native_auto_manual_compaction_windows'] = 'passed'
                 upstream.tool_mode, upstream.phase = True, 'search'
@@ -840,22 +857,22 @@ def run(app, reportdir, edition, *, services=False, progress=None):
                     require_tool_success(chat_custom_events, 'fileChange')
                     patch.require((work / 'CHAT_CUSTOM_TOOL_OK.txt').read_text().strip() == 'CHAT_CUSTOM_TOOL_OK',
                                   'Chat Completions custom apply_patch did not execute')
-                    turn(GPT, 'return to GPT after Chat Completions tools')
+                    turn(gpt, 'return to GPT after Chat Completions tools')
                     report['checks']['native_chat_custom_tools_return_gpt'] = 'passed'
                     upstream.tool_mode,upstream.phase=True,'search'
                     turn('messages-probe','Anthropic native discovery and tool execution')
                     patch.require(not any(v['error'] for v in upstream.records),'Anthropic native tools failed')
                     upstream.tool_mode,upstream.phase=False,'message'
-                    turn(GPT,'return to GPT after Anthropic Messages')
+                    turn(gpt,'return to GPT after Anthropic Messages')
                     report['checks']['native_anthropic_tools_return_gpt']='passed'
                 # A real native usage-limit error must not poison the same
                 # thread when its next turn selects an independent provider.
                 # Carry a native usage count above the destination's threshold.
                 # A short quota fixture misses pre-turn compaction during switching.
                 upstream.next_usage = int(dict(models)[DS] * .7) + 100
-                turn(GPT, 'long GPT history before quota exhaustion')
+                turn(gpt, 'long GPT history before quota exhaustion')
                 upstream.official_exhausted = True
-                result = rpc.request('turn/start', {'threadId':tid, 'model':GPT, 'effort':'high',
+                result = rpc.request('turn/start', {'threadId':tid, 'model':gpt, 'effort':'high',
                     'input':[{'type':'text','text':'Exercise the synthetic exhausted GPT quota.'}]})
                 deadline = time.monotonic() + 60
                 quota_turn = None
@@ -873,16 +890,16 @@ def run(app, reportdir, edition, *, services=False, progress=None):
                               'Native client did not classify the quota error: ' + str(quota_error))
                 before = len(upstream.wire)
                 for model, _ in models:
-                    if model != GPT:
+                    if model != gpt:
                         turn(model, 'independent provider after exhausted GPT quota')
-                patch.require(not any(v['model'] == GPT for v in upstream.wire[before:]),
+                patch.require(not any(v['model'] == gpt for v in upstream.wire[before:]),
                               'Independent turn contacted GPT after quota exhaustion')
                 report['checks']['same_thread_external_after_gpt_quota_exhausted'] = 'passed'
                 patch.require(any(t['compaction'] for t in turns if t['label']=='independent provider after exhausted GPT quota'), 'Long quota switch did not exercise external compaction')
                 report['checks']['long_history_compaction_after_gpt_quota_exhausted'] = 'passed'
                 report['quota_error'] = quota_error
                 upstream.official_exhausted = False
-                turn(GPT, 'return after synthetic GPT quota reset')
+                turn(gpt, 'return after synthetic GPT quota reset')
                 native_identity = rpc.request('thread/resume', {'threadId':tid})
                 patch.require(native_identity['modelProvider'] == 'openai', 'Native prediction eligibility provider identity changed')
                 fork = rpc.request('thread/fork', {'threadId':tid, 'ephemeral':True,
@@ -894,8 +911,8 @@ def run(app, reportdir, edition, *, services=False, progress=None):
                 report['checks']['native_prediction_provider_and_fork'] = 'passed'
                 thread = rpc.request('thread/read', {'threadId': tid, 'includeTurns': True})['thread']
                 patch.require(thread['id'] == tid and len(thread['turns']) >= len(turns), 'Native thread history was lost')
-                official = [v for v in upstream.wire if v['model'] == GPT]
-                routed = [v for v in upstream.wire if v['model'] != GPT]
+                official = [v for v in upstream.wire if v['model'] == gpt]
+                routed = [v for v in upstream.wire if v['model'] != gpt]
                 patch.require(official and all(v['auth_is_official_fixture'] and not v['auth_is_route_fixture'] for v in official),
                               'Official GPT credential boundary failed')
                 patch.require(routed and all((v['auth_is_anonymous'] if v['model'] == 'local-probe' else v['auth_is_route_fixture']) and not v['auth_is_official_fixture']
@@ -905,7 +922,7 @@ def run(app, reportdir, edition, *, services=False, progress=None):
                 report['checks']['gpt_ws_registered_http_auth_isolation'] = 'passed'
                 patch.require(any(v['model'] == DS and v['generate'] is False for v in adapter.native_frames),
                               'Native registered-model WebSocket prewarm was not exercised')
-                patch.require(not any(v['model'] != GPT and v['generate'] is False for v in upstream.wire),
+                patch.require(not any(v['model'] != gpt and v['generate'] is False for v in upstream.wire),
                               'Registered-model prewarm reached the inference endpoint')
                 report['checks']['native_registered_ws_local_prewarm'] = 'passed'
                 # Seed an old encrypted-compaction event ONLY in this disposable
@@ -936,16 +953,16 @@ def run(app, reportdir, edition, *, services=False, progress=None):
                 upstream.recovery_summaries = []
                 before = len(upstream.wire)
                 for model, _ in models:
-                    if model != GPT:
+                    if model != gpt:
                         turn(model, 'recover old encrypted history with no GPT quota', resumed_window=model==DS)
                 turn(DS, 'reuse recovered history cache')
                 upstream.tool_mode, upstream.phase = True, 'integer_call'
                 after_recovery = turn(target, 'native tool execution after old history recovery')
                 require_tool_success(after_recovery, 'commandExecution', 'INTEGER_TOOL_OK')
                 report['checks']['native_tools_after_old_history_recovery'] = 'passed'
-                patch.require(upstream.recovery_summaries == [m for m,_ in models if m!=GPT],
+                patch.require(upstream.recovery_summaries == [m for m,_ in models if m!=gpt],
                               'Recovery did not summarize once per selected model/cache')
-                patch.require(all(v['model']!=GPT for v in upstream.wire[before:]),
+                patch.require(all(v['model']!=gpt for v in upstream.wire[before:]),
                               'Local history recovery contacted the official GPT service')
                 patch.require(path.read_bytes().startswith(prefix), 'History recovery rewrote the existing native rollout')
                 report['checks']['old_encrypted_history_without_gpt_quota'] = 'passed'

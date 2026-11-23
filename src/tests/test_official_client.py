@@ -12,6 +12,14 @@ import update_worker
 
 
 class NativeStagingTests(unittest.TestCase):
+    def test_fresh_catalog_verifies_the_vendor_before_executing_the_cli(self):
+        with patch('official_client_update.verify_official', side_effect=p.PatchError('unverified')) as verify, \
+                patch.object(native.subprocess, 'check_output') as read:
+            with self.assertRaisesRegex(p.PatchError, 'unverified'):
+                native.initial_models(Path('app'), argparse.Namespace())
+            verify.assert_called_once_with(Path('app'))
+            read.assert_not_called()
+
     def test_manual_unified_upgrade_keeps_baseline_service_affinity(self):
         for affinity in ('ds','proxy'):
             with self.subTest(affinity=affinity),tempfile.TemporaryDirectory() as temporary:

@@ -1,3 +1,11 @@
+## Codex CLI 0.171 and the chunked desktop composer
+
+Test both the older named renderer assets and the newer numbered chunks. Exercise the two submit adapters and the rate-limit banner with synthetic local and remote selections. Only the local account usage reason is cleared for registered independent models. Model-specific limits and the other submit reasons still apply. Validate the original and replacement bytes against the signed app. The isolated renderer test covers DOM dispatch with synthetic state.
+
+Use the bundled catalog's visible GPT priority to select the metadata template and the native test model. On this line that selects GPT-6.2 Sol. Readable history recovery skips native reasoning configuration markers, while the official GPT wire protocol can still replay them. Verify old encrypted summaries and later external tools on the same thread. [Codex CLI 0.171.0 release](https://github.com/openai/codex/releases/tag/rust-v0.171.0) · [Native configuration updates](https://github.com/openai/codex/pull/42328)
+
+When the native API rejects a provider change, an upgrade with an owned `codex-model-adapter` definition retains the existing thread under that definition. The native probe verifies the same chat ID and a successful external turn before starting a separate `openai` thread for the current switching and prediction contracts. Other cross-provider migrations and restoration still require a native client that supports the requested change. Preserve the original thread metadata and verify rollback on refusal. [Codex 0.171 app-server provider contract](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/app-server/README.md)
+
 ## Unified 0.9.0 and Issue #5
 
 The product now has one release and two platform receipts. Existing DS/proxy installation identities remain internal ownership affinities; both legacy upgrade paths must preserve credentials, model choices/hiding, context/compaction reductions, service ownership and rollback. Their first compatibility packages share the unified core. New checks use `main/unified-update.json`; bridge equivalence requires exact runtime-file hashes and the same version. Test the next canonical upgrade and rollback, not only initial bridge download.

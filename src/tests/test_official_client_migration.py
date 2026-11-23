@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from official_client_config import PROVIDER
-from official_client_migration import migrate, rollback
+from official_client_migration import ProviderChangeUnsupported, migrate, rollback
 
 
 class FakeNative:
@@ -20,6 +20,7 @@ class FakeNative:
                        reasoningEffort='low' if row['id'] == '2' else 'high')
         self.calls = []
         self.fail_once = None
+        self.provider_locked = False
 
     def request(self, method, params):
         self.calls.append((method, copy.deepcopy(params)))
@@ -38,6 +39,8 @@ class FakeNative:
         elif method == 'thread/resume':
             if tid in self.archived:
                 raise RuntimeError('Archived thread')
+            if self.provider_locked and params['modelProvider'] != self.threads[tid]['modelProvider']:
+                raise ProviderChangeUnsupported()
             self.threads[tid]['modelProvider'] = params['modelProvider']
             self.threads[tid]['cwd'] = params.get('cwd', '/initial-rollout-cwd')
             self.threads[tid]['model'] = params.get('model', 'gpt-6.1-sol')
@@ -51,6 +54,36 @@ class FakeNative:
 
 
 class MigrationTest(unittest.TestCase):
+    def test_locked_legacy_adapter_chats_keep_metadata_and_archive_state(self):
+        native = FakeNative()
+        native.threads['1']['modelProvider'] = PROVIDER
+        native.threads['2']['modelProvider'] = PROVIDER
+        native.provider_locked = True
+        before = copy.deepcopy(native.threads)
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = Path(tmp) / 'migration.json'
+            result = migrate(native, {PROVIDER}, journal, target='openai', retain_adapter=True)
+            self.assertEqual((result['migrated_chats'], result['retained_chats']), (0, 2))
+            self.assertEqual(migrate(native, {PROVIDER}, journal, target='openai', retain_adapter=True), result)
+            with self.assertRaisesRegex(ValueError, 'owned legacy provider'):
+                migrate(native, {PROVIDER}, journal, target='openai')
+            rollback(native, journal)
+        self.assertEqual(native.threads, before)
+        self.assertEqual(native.archived, {'2'})
+
+    def test_unowned_locked_provider_aborts_and_rolls_back_without_resuming_it(self):
+        native = FakeNative()
+        native.provider_locked = True
+        before = copy.deepcopy(native.threads)
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = Path(tmp) / 'migration.json'
+            with self.assertRaises(ProviderChangeUnsupported):
+                migrate(native, {'deepseek-desktop'}, journal, target='openai', retain_adapter=True)
+            count = len(native.calls)
+            rollback(native, journal)
+            self.assertFalse(any(method == 'thread/resume' for method, _ in native.calls[count:]))
+        self.assertEqual(native.threads, before)
+
     def test_native_identity_upgrade_only_touches_legacy_adapter_and_can_roll_back(self):
         native = FakeNative()
         native.threads['1']['modelProvider'] = PROVIDER
